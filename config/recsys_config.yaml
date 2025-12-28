@@ -1,0 +1,32 @@
+dataset:
+  name: "amazon_electronics"
+  n_items: 10000
+  n_users: 1000
+
+experiment:
+  n_episodes: 100
+  session_length: 10
+  k: 500
+
+embeddings:
+  simcse_model: "princeton-nlp/sup-simcse-bert-base-uncased"
+  bert_model: "bert-base-uncased"
+  clip_model: "openai/clip-vit-base-patch32"
+  batch_size: 32
+  cache_dir: "cache"
+
+bandit:
+  type: "thompson_sampling"
+  
+a2c:
+  embedding_dim: 768
+  n_heads: 8
+  n_layers: 2
+  dropout: 0.1
+  learning_rate: 0.0003
+  gamma: 0.99
+
+metrics:
+  - cumulative_regret
+  - hit_rate
+  - coverage_rho
