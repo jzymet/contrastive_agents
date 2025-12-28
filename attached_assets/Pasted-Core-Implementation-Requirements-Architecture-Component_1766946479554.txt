@@ -1,0 +1,672 @@
+Core Implementation Requirements
+Architecture Components
+Shared across all use cases:
+python# 1. Embedding Models (use pretrained, no training needed)
+- SimCSE: princeton-nlp/sup-simcse-bert-base-uncased
+- CLIP: openai/clip-vit-base-patch32
+
+# 2. Sampling Strategy
+- Sample k candidates uniformly from action space
+- k = 500 for RecSys, k = 500 for Tool Selection, k = 50-200 for Math
+
+# 3. Contextual Bandit (for single-step tasks)
+- Thompson Sampling with Beta priors
+- Update beliefs after each interaction
+
+# 4. A2C (for sequential tasks)
+- Transformer encoder for state representation
+- Cross-attention: candidates attend to history
+- Actor-critic heads
+- Episode-based training with advantage estimation
+Key Constraints for Lean Implementation
+1. Dataset Construction - Build Incrementally:
+python# Amazon Electronics:
+# - Start with 10K items scraped from public sources
+# - Extend to 100K if compute allows
+# - Use metadata: title, description, category, image URLs
+# - User-item interaction matrix from reviews
+
+# ToolBench:
+# - Download from official GitHub (ToolLLM)
+# - Use provided I1, I2, I3 splits
+# - 16,464 APIs with descriptions
+
+# GSM8K / MATH-500:
+# - Download from HuggingFace datasets
+# - GSM8K: 8.5K problems
+# - MATH-500: 500 hardest competition problems
+2. Embedding Strategy - Pretrained Only:
+python# NO TRAINING, just inference
+from transformers import AutoModel, AutoTokenizer
+from transformers import CLIPProcessor, CLIPModel
+
+# Load once, reuse everywhere
+simcse_model = AutoModel.from_pretrained('princeton-nlp/sup-simcse-bert-base-uncased')
+clip_model = CLIPModel.from_pretrained('openai/clip-vit-base-patch32')
+
+# Embed items/tools/steps ONCE at start, cache to disk
+# Never re-embed during training
+3. Compute Budget:
+
+Total budget: ~50-100 hours on M4 Mac or free Colab
+Per use case: ~20-30 hours max
+Prioritize: Get all 3 use cases running over perfect performance on 1
+
+Detailed Implementation Plan
+Phase 1: Core Infrastructure (Week 1)
+1.1 Embedding Pipeline
+python# embedding_utils.py
+class EmbeddingCache:
+    """
+    Load pretrained SimCSE/CLIP, embed items once, save to disk.
+    """
+    def __init__(self, model_name='simcse'):
+        # Load model
+        # Setup caching directory
+        
+    def embed_texts(self, texts: List[str]) -> np.ndarray:
+        # Batch encode, return embeddings
+        
+    def embed_images(self, image_paths: List[str]) -> np.ndarray:
+        # CLIP image encoding
+        
+    def save_cache(self, embeddings, filename):
+        # Save to disk for reuse
+1.2 Sampling Strategy
+python# sampling.py
+def uniform_sample(embeddings, k=500):
+    """
+    Sample k items uniformly from embedding space.
+    For BERT: random indices (anisotropic)
+    For SimCSE: random indices (uniform due to contrastive)
+    """
+    indices = np.random.choice(len(embeddings), k, replace=False)
+    return indices
+
+def coverage_metric_rho(embeddings, k, num_trials=100):
+    """
+    Compute ρ(k, K): expected distance from sample to nearest item.
+    Key metric showing SimCSE < BERT.
+    """
+    # Monte Carlo estimation
+1.3 Contextual Bandit
+python# bandit.py
+class ThompsonSamplingBandit:
+    """
+    Thompson Sampling with Beta priors.
+    """
+    def __init__(self, n_arms):
+        self.alpha = np.ones(n_arms)  # success counts
+        self.beta = np.ones(n_arms)   # failure counts
+        
+    def select_arm(self):
+        # Sample from Beta(alpha, beta) for each arm
+        # Return argmax
+        
+    def update(self, arm, reward):
+        # Update alpha, beta based on reward
+1.4 A2C Framework
+python# a2c.py
+class A2CAgent:
+    """
+    Actor-Critic with Transformer encoder.
+    """
+    def __init__(self, state_dim, action_dim, embedding_dim):
+        self.encoder = TransformerEncoder(...)
+        self.actor = nn.Linear(embedding_dim, 1)  # score each candidate
+        self.critic = nn.Linear(embedding_dim, 1)  # value function
+        
+    def forward(self, state_history, candidate_embeddings):
+        # Encode history
+        # Cross-attention with candidates
+        # Return action logits, value
+        
+    def update(self, trajectory):
+        # Compute advantages
+        # Policy gradient + value loss
+Phase 2: RecSys Experiments (Week 2)
+2.1 Amazon Electronics Dataset
+python# datasets/amazon_electronics.py
+
+# Option A: Scrape incrementally from web
+def scrape_amazon_electronics(n_items=10000):
+    """
+    Build lean dataset from public sources:
+    - Amazon product pages (via BeautifulSoup + requests)
+    - Or use existing dumps (e.g., UCSD Amazon dataset subsets)
+    """
+    # Get product metadata: title, description, category, image_url, price
+    # Get user-item interactions from reviews
+    
+# Option B: Use existing preprocessed subsets
+# - Julian McAuley's Amazon dataset (publicly available)
+# - Filter to Electronics category
+# - Sample 10K-100K items based on popularity
+
+# Structure:
+# items.csv: item_id, title, description, category, image_url
+# interactions.csv: user_id, item_id, rating, timestamp
+2.2 Contextual Bandit Experiments
+python# experiments/recsys_bandit.py
+
+def run_recsys_bandit_experiment(embedding_type='simcse'):
+    """
+    Single-interaction recommendation.
+    
+    Setup:
+    - Embed all items once with SimCSE or BERT
+    - For each user query/context:
+        - Sample k=500 candidates
+        - Thompson Sampling selects from candidates
+        - Observe reward (click/no-click)
+        - Update beliefs
+    
+    Metrics:
+    - Cumulative regret
+    - Hit rate @ k
+    - Coverage ρ(k, K) over time
+    """
+    
+    # Load embeddings
+    embeddings = load_cached_embeddings()
+    
+    # Initialize bandit
+    bandit = ThompsonSamplingBandit(n_arms=500)
+    
+    # Simulate user interactions
+    for episode in range(n_episodes):
+        # Sample k candidates
+        candidate_indices = uniform_sample(embeddings, k=500)
+        
+        # Select item
+        arm = bandit.select_arm()
+        item_idx = candidate_indices[arm]
+        
+        # Get reward (from user-item interaction matrix)
+        reward = get_reward(user_id, item_idx)
+        
+        # Update
+        bandit.update(arm, reward)
+        
+    # Log metrics
+2.3 A2C Sequential Experiments
+python# experiments/recsys_a2c.py
+
+def run_recsys_a2c_experiment(embedding_type='simcse'):
+    """
+    Sequential 10-step session-based recommendation.
+    
+    Setup:
+    - State: user history (sequence of items clicked)
+    - Action: next item to recommend
+    - Episode: 10-step session
+    - Reward: +1 per click, +5 for session completion
+    """
+    
+    agent = A2CAgent(state_dim=768, action_dim=768, embedding_dim=768)
+    
+    for episode in range(n_episodes):
+        state_history = []
+        
+        for step in range(10):
+            # Sample k candidates
+            candidate_indices = uniform_sample(embeddings, k=500)
+            candidate_embeds = embeddings[candidate_indices]
+            
+            # Agent selects action
+            action_logits, value = agent(state_history, candidate_embeds)
+            action = sample_from_logits(action_logits)
+            
+            # Get reward
+            reward = get_reward(user_id, candidate_indices[action])
+            
+            # Update history
+            state_history.append(candidate_embeds[action])
+            
+            # Store transition
+            
+        # Update agent at end of episode
+        agent.update(episode_trajectory)
+2.4 Baselines
+python# Always run both:
+# - BERT embeddings (non-contrastive baseline)
+# - SimCSE embeddings (contrastive, ours)
+# 
+# Optional if time:
+# - Random embeddings
+# - TF-IDF
+Phase 3: Tool Selection Experiments (Week 3)
+3.1 ToolBench Dataset
+python# datasets/toolbench.py
+
+def load_toolbench_data():
+    """
+    Download from ToolLLM GitHub:
+    https://github.com/OpenBMB/ToolBench
+    
+    Structure:
+    - 16,464 APIs with descriptions
+    - I1: Single-tool queries
+    - I2: Multi-tool same-category
+    - I3: Multi-tool cross-category (hardest)
+    
+    Format:
+    {
+        'api_id': 'SearchFlights',
+        'category': 'Travel',
+        'description': 'Search for available flights...',
+        'parameters': {...}
+    }
+    """
+    # Download dataset
+    # Parse API descriptions
+    # Create query-API mappings for I1/I2/I3
+3.2 Single-Step Tool Selection (I1)
+python# experiments/tool_bandit.py
+
+def run_tool_selection_bandit():
+    """
+    I1 tasks: Select single tool for query.
+    
+    Same structure as RecSys bandit:
+    - Embed 16,464 tool descriptions with SimCSE
+    - Sample k=500 per query
+    - Thompson Sampling
+    - Reward: tool succeeds/fails
+    """
+3.3 Multi-Step Tool Chaining (I2, I3)
+python# experiments/tool_a2c.py
+
+def run_tool_chaining_a2c():
+    """
+    I2/I3 tasks: Chain tools to solve complex query.
+    
+    State: {
+        'query': "Book flight and hotel to Paris",
+        'tool_history': [SearchFlights, BookFlight],
+        'results_history': [...],
+    }
+    
+    Action: Next tool to call
+    
+    Episode: 1-10 tool calls
+    
+    Reward: Task completion + efficiency bonus
+    """
+    
+    agent = A2CAgent(...)
+    
+    for query in test_queries:
+        state = {'query': query, 'tool_history': [], 'results': []}
+        
+        for step in range(max_steps=10):
+            # Sample k=500 candidate tools
+            candidates = uniform_sample(tool_embeddings, k=500)
+            
+            # Agent selects tool
+            tool_idx = agent.select_action(state, candidates)
+            
+            # Execute tool (simulated)
+            result, success = execute_tool(tool_idx, state)
+            
+            # Update state
+            state['tool_history'].append(tool_idx)
+            state['results'].append(result)
+            
+            # Check if task complete
+            if task_complete(state):
+                reward = +10
+                break
+            
+        # Update agent
+3.4 Key Hypothesis for Tool Use
+python# The key metric:
+# - I3 (cross-category) performance
+# - Hypothesis: SimCSE uniformity discovers complementary tool chains
+#   that BERT misses (e.g., Travel + Food + Weather)
+Phase 4: Math Reasoning Experiments (Week 4)
+4.1 GSM8K / MATH-500 Dataset
+python# datasets/math_datasets.py
+
+from datasets import load_dataset
+
+def load_math_datasets():
+    """
+    HuggingFace datasets:
+    - GSM8K: gsm8k (train: 7.5K, test: 1K)
+    - MATH: hendrycks/math (subset MATH-500)
+    """
+    gsm8k = load_dataset("gsm8k", "main")
+    math = load_dataset("hendrycks/math", "all")
+    
+    # Filter MATH to hardest 500 problems
+    math_500 = filter_hardest(math, n=500)
+    
+    return gsm8k, math_500
+4.2 Template-Based Step Generation
+python# math_reasoning/templates.py
+
+REASONING_TEMPLATES = [
+    "Calculate {a} + {b}",
+    "Calculate {a} - {b}",
+    "Calculate {a} × {b}",
+    "Calculate {a} ÷ {b}",
+    "Calculate {percent}% of {value}",
+    "Let {var} = {expr}",
+    "Substitute {var} = {value} into {expr}",
+    "Solve {equation} for {var}",
+    # ... more templates
+]
+
+def generate_step_candidates(problem_state, n_candidates=100):
+    """
+    Instantiate templates with problem-specific values.
+    
+    Example:
+    Problem: "John buys 5 apples at $2 each with 10% discount"
+    State: {'base_cost': None, 'discount': None}
+    
+    Candidates:
+    - "Calculate 5 × 2"
+    - "Calculate 10% of (5 × 2)"
+    - "Let base_cost = 5 × 2"
+    - ...
+    """
+    candidates = []
+    
+    # Extract numbers, variables from problem
+    numbers = extract_numbers(problem_state)
+    
+    # Instantiate templates
+    for template in REASONING_TEMPLATES:
+        # Fill in {a}, {b}, {var}, etc.
+        step = instantiate_template(template, numbers)
+        candidates.append(step)
+    
+    return candidates
+4.3 SymPy Verification (FREE!)
+python# math_reasoning/verification.py
+
+import sympy
+
+def verify_step(step_text):
+    """
+    Verify arithmetic steps symbolically.
+    
+    Example:
+    step_text = "Calculate 5 × 2 = 10"
+    
+    Returns:
+    - valid: True/False
+    - result: 10
+    """
+    # Parse step text
+    expr, expected = parse_step(step_text)
+    # e.g., expr = "5 * 2", expected = 10
+    
+    # Evaluate with SymPy
+    result = sympy.simplify(expr)
+    
+    # Check correctness
+    valid = (result == expected)
+    
+    return valid, result
+
+def get_step_reward(step_text):
+    """
+    Reward for taking a step:
+    - +1 if valid (verified by SymPy)
+    - -1 if invalid
+    """
+    valid, _ = verify_step(step_text)
+    return 1.0 if valid else -1.0
+4.4 A2C Reasoning Agent
+python# experiments/math_a2c.py
+
+def run_math_reasoning_a2c(embedding_type='simcse'):
+    """
+    Sequential reasoning with A2C.
+    
+    State: {
+        'problem': "...",
+        'steps_taken': ["Calculate 5 × 2 = 10", ...],
+        'current_values': {'base_cost': 10, ...}
+    }
+    
+    Action: Next reasoning step (from candidates)
+    
+    Episode: Problem → Steps → Final answer
+    
+    Reward:
+    - Intermediate: +1 per valid step (SymPy verified)
+    - Final: +10 if correct answer
+    """
+    
+    agent = A2CAgent(...)
+    
+    # Train on GSM8K
+    for problem in gsm8k_train:
+        state = {'problem': problem['question'], 'steps': [], 'values': {}}
+        
+        for step_num in range(max_steps=20):
+            # Generate candidate steps
+            candidates_text = generate_step_candidates(state, n=100)
+            
+            # Embed candidates
+            candidates_embed = simcse_model.encode(candidates_text)
+            
+            # Agent selects step
+            step_idx = agent.select_action(state, candidates_embed)
+            
+            # Verify step
+            valid, result = verify_step(candidates_text[step_idx])
+            reward = 1.0 if valid else -1.0
+            
+            # Update state
+            if valid:
+                state['steps'].append(candidates_text[step_idx])
+                state['values'].update(extract_values(result))
+            
+            # Check if final answer reached
+            if has_final_answer(state):
+                correct = check_answer(state, problem['answer'])
+                reward += 10.0 if correct else 0.0
+                break
+        
+        # Update agent
+        agent.update(episode_trajectory)
+    
+    # Test on MATH-500
+    test_on_math500(agent)
+4.5 Key Hypothesis for Math
+python# PRIMARY: Diversity of reasoning strategies
+# - SimCSE uniformity explores diverse tactics:
+#   algebra, arithmetic, substitution, etc.
+# - BERT over-exploits one approach
+#
+# Metrics:
+# - Strategy entropy: how many different tactic types used
+# - Generalization: GSM8K → MATH-500 transfer
+
+# SECONDARY: Search efficiency (positioning vs rStar-Math)
+# - Rollouts needed to reach solve rate threshold
+# - Unique strategies discovered vs rollouts
+# - ρ(k,K) correlation with search efficiency
+#
+# Key insight: We're not trying to beat their 90% on MATH.
+# We're showing WHY uniformity makes search efficient.
+4.6 Search Efficiency Analysis (NEW)
+python# experiments/math_search_efficiency.py
+
+def analyze_search_efficiency(embedding_type='simcse'):
+    """
+    Compare search efficiency between BERT and SimCSE.
+    
+    This positions us against rStar-Math (ICML 2025 Oral):
+    - They achieve 90% on MATH via extensive MCTS rollouts
+    - We show uniformity reduces rollouts needed
+    - Theory explains practice
+    
+    Metrics:
+    - Rollouts to reach 70% solve rate (fewer = better)
+    - Unique strategies found in N rollouts (more = better)
+    - ρ(k,K) coverage metric (lower = better)
+    """
+    
+    results = {'bert': {}, 'simcse': {}}
+    
+    for embed_type in ['bert', 'simcse']:
+        agent = A2CAgent(embedding_type=embed_type)
+        
+        # Track search statistics
+        rollout_count = 0
+        solve_rates = []
+        unique_strategies = set()
+        
+        for problem in gsm8k_train:
+            # Run episode
+            trajectory = run_episode(agent, problem)
+            rollout_count += len(trajectory)
+            
+            # Track metrics
+            if solved_correctly(trajectory, problem):
+                solve_rates.append(1.0)
+            else:
+                solve_rates.append(0.0)
+            
+            # Track unique strategy types used
+            strategies = extract_strategy_types(trajectory)
+            # e.g., ['algebra', 'arithmetic', 'substitution']
+            unique_strategies.update(strategies)
+            
+            # Check if reached 70% threshold
+            if np.mean(solve_rates[-100:]) >= 0.70:
+                results[embed_type]['rollouts_to_70'] = rollout_count
+                results[embed_type]['unique_strategies'] = len(unique_strategies)
+                break
+        
+        # Compute coverage metric
+        embeddings = load_embeddings(embed_type)
+        results[embed_type]['rho_k_K'] = coverage_metric_rho(embeddings, k=100)
+    
+    # Compare
+    improvement = (results['bert']['rollouts_to_70'] - 
+                   results['simcse']['rollouts_to_70']) / results['bert']['rollouts_to_70']
+    
+    print(f"SimCSE requires {improvement*100:.1f}% fewer rollouts to reach 70% solve rate")
+    print(f"SimCSE discovers {results['simcse']['unique_strategies']} unique strategies vs "
+          f"{results['bert']['unique_strategies']} for BERT")
+    print(f"ρ(k,K): SimCSE={results['simcse']['rho_k_K']:.3f}, "
+          f"BERT={results['bert']['rho_k_K']:.3f}")
+    
+    return results
+
+def extract_strategy_types(trajectory):
+    """
+    Classify reasoning steps into strategy types.
+    
+    Types:
+    - 'direct_calculation': Simple arithmetic (5 + 3)
+    - 'algebraic_manipulation': Variable substitution, solving equations
+    - 'percentage_calculation': Computing percentages
+    - 'unit_conversion': Converting units
+    - 'geometric_reasoning': Area, volume, angles
+    - 'logical_deduction': If-then reasoning
+    """
+    strategies = []
+    
+    for step in trajectory:
+        # Simple pattern matching on step text
+        if 'calculate' in step.lower() and any(op in step for op in ['+', '-', '*', '/']):
+            strategies.append('direct_calculation')
+        elif 'let' in step.lower() or 'solve' in step.lower():
+            strategies.append('algebraic_manipulation')
+        elif '%' in step or 'percent' in step.lower():
+            strategies.append('percentage_calculation')
+        # ... more patterns
+    
+    return strategies
+Implementation Priorities
+Must-Have (Core Results)
+
+All 3 use cases running with basic metrics
+SimCSE vs BERT comparison on all tasks
+Coverage metric ρ(k, K) showing SimCSE < BERT
+Key performance metrics:
+
+RecSys: Hit@k, cumulative regret
+Tool Use: I3 cross-category success rate
+Math: Solve rate, strategy diversity
+
+
+
+Nice-to-Have (Extended Results)
+
+CLIP embeddings for RecSys (multimodal)
+Multiple k values (k=100, 500, 1000)
+Ablations: Random sampling, TF-IDF baseline
+Visualization: t-SNE of embedding spaces, strategy usage heatmaps
+
+Skip if Time-Constrained
+
+Large-scale experiments (>100K items)
+Hyperparameter tuning (use defaults from papers)
+Additional datasets (stick to core 3)
+
+Code Structure
+contrastive_rl/
+├── README.md
+├── requirements.txt
+├── config/
+│   ├── recsys_config.yaml
+│   ├── tool_config.yaml
+│   └── math_config.yaml
+├── src/
+│   ├── embeddings/
+│   │   ├── simcse.py
+│   │   ├── clip.py
+│   │   └── cache.py
+│   ├── agents/
+│   │   ├── bandit.py
+│   │   └── a2c.py
+│   ├── datasets/
+│   │   ├── amazon.py
+│   │   ├── toolbench.py
+│   │   └── math_data.py
+│   └── utils/
+│       ├── sampling.py
+│       ├── metrics.py
+│       └── visualization.py
+├── experiments/
+│   ├── recsys_bandit.py
+│   ├── recsys_a2c.py
+│   ├── tool_bandit.py
+│   ├── tool_a2c.py
+│   ├── math_a2c.py
+│   └── run_all.py
+├── notebooks/
+│   ├── 01_explore_embeddings.ipynb
+│   ├── 02_coverage_analysis.ipynb
+│   └── 03_results_visualization.ipynb
+└── results/
+    ├── plots/
+    ├── metrics/
+    └── checkpoints/
+Key Dependencies
+python# requirements.txt
+torch>=2.0.0
+transformers>=4.30.0
+sentence-transformers>=2.2.0  # For SimCSE
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+sympy>=1.12  # For math verification
+datasets>=2.14.0  # HuggingFace datasets
+matplotlib>=3.7.0
+seaborn>=0.12.0
+tqdm>=4.65.0
+
+# Optional (if using CLIP for images)
+Pillow>=10.0.0
+requests>=2.31.0  # For downloading images
