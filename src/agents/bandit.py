@@ -1,166 +1,359 @@
 import numpy as np
-from typing import List, Tuple, Optional, Dict
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from typing import Literal
 
 
-class ThompsonSamplingBandit:
-    def __init__(self, n_arms: int):
-        self.n_arms = n_arms
-        self.alpha = np.ones(n_arms)
-        self.beta = np.ones(n_arms)
-        self.total_pulls = 0
-        self.arm_pulls = np.zeros(n_arms)
+class LinearContextualBandit:
+    """
+    Linear contextual bandit with UCB or Thompson Sampling.
+
+    Assumes reward function: r(x) = w^T x + noise
+    where x is the embedding (768-dim)
+
+    This is the baseline to compare against NeuralTS.
+    """
+
+    def __init__(self,
+                 embedding_dim: int = 768,
+                 algorithm: Literal['ucb', 'ts'] = 'ts',
+                 lambda_reg: float = 1.0,
+                 delta: float = 0.1):
+        self.d = embedding_dim
+        self.algorithm = algorithm
+        self.lambda_reg = lambda_reg
+        self.delta = delta
+
+        # Sufficient statistics
+        self.A = lambda_reg * np.eye(self.d)  # (d, d) precision matrix
+        self.b = np.zeros(self.d)  # (d,) weighted rewards
+
+        # Weights (posterior mean)
+        self.w = np.zeros(self.d)
+
+        # For TS: posterior covariance
+        self.A_inv = np.linalg.inv(self.A)
+
+        # Tracking
+        self.t = 0
         self.rewards_history = []
-        self.cumulative_reward = 0.0
-    
-    def select_arm(self) -> int:
-        samples = np.random.beta(self.alpha, self.beta)
-        return int(np.argmax(samples))
-    
-    def update(self, arm: int, reward: float):
-        self.alpha[arm] += reward
-        self.beta[arm] += (1.0 - reward)
-        
-        self.arm_pulls[arm] += 1
-        self.total_pulls += 1
+        self.cumulative_regret = []
+
+    def update_posterior(self):
+        """Update posterior mean and covariance."""
+        self.A_inv = np.linalg.inv(self.A)
+        self.w = self.A_inv @ self.b
+
+    def predict_ucb(self,
+                    embeddings: np.ndarray,
+                    alpha: float = 1.0) -> np.ndarray:
+        """
+        UCB scores for all candidate embeddings.
+
+        Args:
+            embeddings: (K, d) candidate embeddings
+            alpha: Exploration parameter
+
+        Returns:
+            ucb_scores: (K,) upper confidence bounds
+        """
+        # Mean prediction
+        mean = embeddings @ self.w  # (K,)
+
+        # Uncertainty (confidence width)
+        # σ²(x) = x^T A^{-1} x
+        uncertainty = np.sqrt(
+            np.sum((embeddings @ self.A_inv) * embeddings, axis=1))  # (K,)
+
+        # UCB = mean + α * uncertainty
+        ucb_scores = mean + alpha * uncertainty
+
+        return ucb_scores
+
+    def predict_ts(self, embeddings: np.ndarray) -> np.ndarray:
+        """
+        Thompson Sampling: sample weights from posterior, score candidates.
+
+        Args:
+            embeddings: (K, d) candidate embeddings
+
+        Returns:
+            sampled_scores: (K,) scores under sampled weights
+        """
+        # Sample from posterior: w ~ N(w_hat, A^{-1})
+        w_sample = np.random.multivariate_normal(self.w, self.A_inv)
+
+        # Score candidates with sampled weights
+        scores = embeddings @ w_sample  # (K,)
+
+        return scores
+
+    def select_arm(self, candidate_embeddings: np.ndarray) -> int:
+        """
+        Select arm (item) from candidates.
+
+        Args:
+            candidate_embeddings: (K, d) embeddings for K candidates
+
+        Returns:
+            selected_idx: Index of selected candidate (0 to K-1)
+        """
+        if self.algorithm == 'ucb':
+            scores = self.predict_ucb(candidate_embeddings)
+        elif self.algorithm == 'ts':
+            scores = self.predict_ts(candidate_embeddings)
+        else:
+            raise ValueError(f"Unknown algorithm: {self.algorithm}")
+
+        return int(np.argmax(scores))
+
+    def update(self, embedding: np.ndarray, reward: float):
+        """
+        Update posterior after observing reward.
+
+        Args:
+            embedding: (d,) selected item's embedding
+            reward: Observed reward (0 or 1)
+        """
+        # Update sufficient statistics
+        self.A += np.outer(embedding, embedding)
+        self.b += reward * embedding
+
+        # Update posterior
+        self.update_posterior()
+
+        # Track
+        self.t += 1
         self.rewards_history.append(reward)
-        self.cumulative_reward += reward
-    
+
+    def get_weights(self) -> np.ndarray:
+        """Return current weight vector (for RKHS analysis)."""
+        return self.w.copy()
+
     def reset(self):
-        self.alpha = np.ones(self.n_arms)
-        self.beta = np.ones(self.n_arms)
-        self.total_pulls = 0
-        self.arm_pulls = np.zeros(self.n_arms)
+        """Reset bandit to initial state."""
+        self.A = self.lambda_reg * np.eye(self.d)
+        self.b = np.zeros(self.d)
+        self.w = np.zeros(self.d)
+        self.A_inv = np.linalg.inv(self.A)
+        self.t = 0
         self.rewards_history = []
-        self.cumulative_reward = 0.0
-    
-    def get_expected_rewards(self) -> np.ndarray:
-        return self.alpha / (self.alpha + self.beta)
-    
-    def get_ucb_scores(self, c: float = 2.0) -> np.ndarray:
-        means = self.get_expected_rewards()
-        exploration = c * np.sqrt(np.log(self.total_pulls + 1) / (self.arm_pulls + 1))
-        return means + exploration
+        self.cumulative_regret = []
 
 
-class UCBBandit:
-    def __init__(self, n_arms: int, c: float = 2.0):
-        self.n_arms = n_arms
-        self.c = c
-        self.counts = np.zeros(n_arms)
-        self.values = np.zeros(n_arms)
-        self.total_pulls = 0
+class NeuralContextualBandit:
+    """
+    Neural Thompson Sampling bandit (adapted from NeuralTS).
+
+    Paper: "Neural Contextual Bandits with UCB-based Exploration"
+    Code: https://github.com/ZeroWeight/NeuralTS
+
+    Key differences from linear:
+    - Non-linear reward: r(x) = f_θ(x)
+    - Neural tangent kernel for uncertainty
+    - Diagonal approximation for efficiency
+    """
+
+    def __init__(self,
+                 embedding_dim: int = 768,
+                 hidden_dim: int = 100,
+                 lambda_reg: float = 1.0,
+                 nu: float = 1.0,
+                 learning_rate: float = 0.01,
+                 use_cuda: bool = False):
+        self.d = embedding_dim
+        self.m = hidden_dim
+        self.lambda_reg = lambda_reg
+        self.nu = nu
+        self.lr = learning_rate
+
+        # Device
+        self.device = torch.device(
+            'cuda' if use_cuda and torch.cuda.is_available() else 'cpu')
+
+        # Neural network: 2-layer MLP
+        self.network = nn.Sequential(nn.Linear(embedding_dim, hidden_dim),
+                                     nn.ReLU(), nn.Linear(hidden_dim,
+                                                          1)).to(self.device)
+
+        # Optimizer
+        self.optimizer = optim.SGD(self.network.parameters(), lr=learning_rate)
+
+        # Diagonal approximation of precision matrix
+        # U_t ≈ diag of gradient outer products
+        n_params = sum(p.numel() for p in self.network.parameters())
+        self.U = torch.eye(n_params).to(self.device)  # Diagonal approx
+
+        # Tracking
+        self.t = 0
         self.rewards_history = []
-        self.cumulative_reward = 0.0
-    
-    def select_arm(self) -> int:
-        if self.total_pulls < self.n_arms:
-            return self.total_pulls
-        
-        ucb_values = self.values + self.c * np.sqrt(
-            np.log(self.total_pulls) / (self.counts + 1e-5)
-        )
-        return int(np.argmax(ucb_values))
-    
-    def update(self, arm: int, reward: float):
-        self.counts[arm] += 1
-        n = self.counts[arm]
-        self.values[arm] = ((n - 1) * self.values[arm] + reward) / n
-        self.total_pulls += 1
+        self.training_losses = []
+
+    def forward(self, embedding: torch.Tensor, compute_variance: bool = True):
+        """
+        Forward pass with optional uncertainty estimation.
+
+        Args:
+            embedding: (d,) or (batch, d)
+            compute_variance: Whether to compute posterior variance
+
+        Returns:
+            mu: Mean prediction
+            sigma: Standard deviation (if compute_variance=True)
+        """
+        # Ensure 2D
+        if embedding.dim() == 1:
+            embedding = embedding.unsqueeze(0)
+
+        # Mean prediction
+        mu = self.network(embedding).squeeze(-1)  # (batch,)
+
+        if not compute_variance:
+            return mu, None
+
+        # Compute gradient (Jacobian) for uncertainty
+        # g_t = ∇_θ f_θ(x_t)
+        self.network.zero_grad()
+        mu_single = mu[0] if mu.dim() > 0 else mu
+        mu_single.backward(retain_graph=True)
+
+        # Collect gradients into vector
+        grads = []
+        for p in self.network.parameters():
+            if p.grad is not None:
+                grads.append(p.grad.view(-1))
+        grad_vec = torch.cat(grads)  # (n_params,)
+
+        # Variance via neural tangent kernel
+        # σ²(x) = g_t^T U_t^{-1} g_t / m
+        U_inv = torch.inverse(self.U)
+        sigma_sq = (grad_vec @ U_inv @ grad_vec) / self.m
+        sigma = torch.sqrt(self.lambda_reg * self.nu * sigma_sq)
+
+        return mu, sigma
+
+    def predict_ts(self, candidate_embeddings: torch.Tensor) -> torch.Tensor:
+        """
+        Thompson Sampling: sample from posterior for each candidate.
+
+        Args:
+            candidate_embeddings: (K, d)
+
+        Returns:
+            sampled_rewards: (K,)
+        """
+        sampled_rewards = []
+
+        with torch.no_grad():
+            for emb in candidate_embeddings:
+                mu, sigma = self.forward(emb, compute_variance=True)
+
+                # Sample from N(mu, sigma²)
+                reward_sample = torch.normal(mu, sigma)
+                sampled_rewards.append(reward_sample.item())
+
+        return torch.tensor(sampled_rewards)
+
+    def select_arm(self, candidate_embeddings: np.ndarray) -> int:
+        """
+        Select arm via Thompson Sampling.
+
+        Args:
+            candidate_embeddings: (K, d) numpy array
+
+        Returns:
+            selected_idx: Index in [0, K-1]
+        """
+        # Convert to tensor
+        embeddings_tensor = torch.tensor(candidate_embeddings,
+                                         dtype=torch.float32).to(self.device)
+
+        # Thompson Sampling
+        sampled_rewards = self.predict_ts(embeddings_tensor)
+
+        # Select highest sampled reward
+        selected_idx = int(torch.argmax(sampled_rewards))
+
+        return selected_idx
+
+    def update(self, embedding: np.ndarray, reward: float):
+        """
+        Update network via SGD with time-decaying regularization.
+
+        Args:
+            embedding: (d,) selected item embedding
+            reward: Observed reward
+        """
+        # Convert to tensor
+        emb_tensor = torch.tensor(embedding,
+                                  dtype=torch.float32).to(self.device)
+
+        # Forward pass
+        pred, _ = self.forward(emb_tensor, compute_variance=False)
+
+        # Loss: MSE + time-decaying L2 regularization
+        mse_loss = (reward - pred)**2
+
+        # Regularization: (λ / t) * ||θ||²
+        reg_loss = (self.lambda_reg /
+                    (self.t + 1)) * sum(p.norm()**2
+                                        for p in self.network.parameters())
+
+        loss = mse_loss + reg_loss
+
+        # Backward pass
+        self.optimizer.zero_grad()
+        loss.backward()
+
+        # Clip gradients
+        torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
+
+        # Update parameters
+        self.optimizer.step()
+
+        # Update U matrix (diagonal approximation)
+        # U_t = U_{t-1} + g_t g_t^T
+        with torch.no_grad():
+            grads = []
+            for p in self.network.parameters():
+                if p.grad is not None:
+                    grads.append(p.grad.view(-1))
+            grad_vec = torch.cat(grads)
+
+            # Diagonal update: U_ii += g_i²
+            self.U += torch.outer(grad_vec, grad_vec)
+
+        # Track
+        self.t += 1
         self.rewards_history.append(reward)
-        self.cumulative_reward += reward
-    
+        self.training_losses.append(loss.item())
+
+    def get_weights(self) -> np.ndarray:
+        """
+        Extract first layer weights for RKHS analysis.
+
+        Returns:
+            weights: (d,) averaged across hidden units
+        """
+        first_layer = list(self.network.children())[0]
+        weights = first_layer.weight.data.cpu().numpy()  # (hidden_dim, d)
+
+        # Average across hidden units
+        return weights.mean(axis=0)  # (d,)
+
     def reset(self):
-        self.counts = np.zeros(self.n_arms)
-        self.values = np.zeros(self.n_arms)
-        self.total_pulls = 0
+        """Reset bandit."""
+        # Re-initialize network
+        for layer in self.network:
+            if hasattr(layer, 'reset_parameters'):
+                layer.reset_parameters()
+
+        # Reset U matrix
+        n_params = sum(p.numel() for p in self.network.parameters())
+        self.U = torch.eye(n_params).to(self.device)
+
+        # Reset tracking
+        self.t = 0
         self.rewards_history = []
-        self.cumulative_reward = 0.0
-
-
-class PersistentContextualBandit:
-    def __init__(self, n_total_items: int, k: int = 500):
-        self.n_total_items = n_total_items
-        self.k = k
-        
-        self.item_alpha = np.ones(n_total_items)
-        self.item_beta = np.ones(n_total_items)
-        self.item_pulls = np.zeros(n_total_items)
-        
-        self.total_pulls = 0
-        self.rewards_history = []
-        self.cumulative_reward = 0.0
-        
-        self.current_candidates = None
-        self.candidate_to_item_map = None
-    
-    def set_candidates(self, candidate_indices: np.ndarray):
-        self.current_candidates = candidate_indices
-        self.candidate_to_item_map = {i: idx for i, idx in enumerate(candidate_indices)}
-    
-    def select_arm(self) -> int:
-        if self.current_candidates is None:
-            raise ValueError("Call set_candidates first")
-        
-        candidate_samples = np.random.beta(
-            self.item_alpha[self.current_candidates],
-            self.item_beta[self.current_candidates]
-        )
-        return int(np.argmax(candidate_samples))
-    
-    def update(self, arm: int, reward: float):
-        if self.current_candidates is None:
-            raise ValueError("Call set_candidates first")
-        
-        item_idx = self.current_candidates[arm]
-        
-        self.item_alpha[item_idx] += reward
-        self.item_beta[item_idx] += (1.0 - reward)
-        self.item_pulls[item_idx] += 1
-        
-        self.total_pulls += 1
-        self.rewards_history.append(reward)
-        self.cumulative_reward += reward
-    
-    def get_item_stats(self, item_idx: int) -> Tuple[float, float, int]:
-        expected = self.item_alpha[item_idx] / (self.item_alpha[item_idx] + self.item_beta[item_idx])
-        variance = (self.item_alpha[item_idx] * self.item_beta[item_idx]) / \
-                   ((self.item_alpha[item_idx] + self.item_beta[item_idx]) ** 2 * 
-                    (self.item_alpha[item_idx] + self.item_beta[item_idx] + 1))
-        return expected, variance, int(self.item_pulls[item_idx])
-    
-    def reset(self):
-        self.item_alpha = np.ones(self.n_total_items)
-        self.item_beta = np.ones(self.n_total_items)
-        self.item_pulls = np.zeros(self.n_total_items)
-        self.total_pulls = 0
-        self.rewards_history = []
-        self.cumulative_reward = 0.0
-        self.current_candidates = None
-        self.candidate_to_item_map = None
-
-
-class ContextualBandit:
-    def __init__(self, embedding_dim: int, n_candidate_arms: int = 500):
-        self.embedding_dim = embedding_dim
-        self.n_candidate_arms = n_candidate_arms
-        self.bandit = None
-    
-    def initialize_episode(self, candidate_embeddings: np.ndarray):
-        self.candidate_embeddings = candidate_embeddings
-        self.bandit = ThompsonSamplingBandit(len(candidate_embeddings))
-    
-    def select_arm(self, context_embedding: Optional[np.ndarray] = None) -> int:
-        if self.bandit is None:
-            raise ValueError("Call initialize_episode first")
-        
-        if context_embedding is not None:
-            similarities = self.candidate_embeddings @ context_embedding
-            priors = (similarities - similarities.min()) / (similarities.max() - similarities.min() + 1e-8)
-            self.bandit.alpha = 1 + priors
-        
-        return self.bandit.select_arm()
-    
-    def update(self, arm: int, reward: float):
-        if self.bandit is None:
-            raise ValueError("Call initialize_episode first")
-        self.bandit.update(arm, reward)
+        self.training_losses = []

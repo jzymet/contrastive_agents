@@ -58,9 +58,10 @@ class BaseEmbeddingExtractor(ABC):
         
         elif current_dim > self.target_dim:
             if self.pca is None:
-                print(f"Warning: PCA not fitted. Call fit_pca() first.")
-                self.pca = PCA(n_components=self.target_dim)
-                self.pca.fit(embeddings)
+                raise ValueError(
+                    f"PCA not fitted! Native dim ({current_dim}) > target dim ({self.target_dim}). "
+                    f"Call fit_pca() on representative sample data first."
+                )
             
             return self.pca.transform(embeddings)
         

@@ -2,7 +2,6 @@ import numpy as np
 import torch
 from typing import Dict, Optional
 
-
 def compute_rkhs_norm(reward_weights: np.ndarray, eigenvalues: np.ndarray) -> float:
     """
     Compute RKHS norm of reward function.
@@ -19,7 +18,6 @@ def compute_rkhs_norm(reward_weights: np.ndarray, eigenvalues: np.ndarray) -> fl
     rkhs_norm_squared = np.sum(reward_weights**2 / (eigenvalues + 1e-10))
     return float(np.sqrt(rkhs_norm_squared))
 
-
 def extract_reward_weights_from_bandit(trained_model) -> np.ndarray:
     """
     Extract final layer weights from neural bandit.
@@ -34,7 +32,6 @@ def extract_reward_weights_from_bandit(trained_model) -> np.ndarray:
         return trained_model.weights
     
     raise ValueError("Could not extract weights from model")
-
 
 def extract_reward_weights_from_critic(trained_model) -> np.ndarray:
     """

@@ -1,8 +1,9 @@
-from .neural_ts import NeuralTSBandit, SimpleNeuralBandit
+from .neural_ts import NeuralContextualBandit, LinearContextualBandit, SimpleNeuralBandit
 from .reward_transformer import RewardTransformer, A2CTransformerAgent
 
 __all__ = [
-    'NeuralTSBandit',
+    'NeuralContextualBandit',
+    'LinearContextualBandit',
     'SimpleNeuralBandit', 
     'RewardTransformer',
     'A2CTransformerAgent'
