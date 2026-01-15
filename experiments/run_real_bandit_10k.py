@@ -1,5 +1,5 @@
 """
-Run larger-scale bandit experiment with 10K rounds and more items.
+Run larger-scale bandit experiment with 10K rounds, 10K items, 500 candidates/round.
 """
 
 import sys
@@ -13,18 +13,20 @@ import gc
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def get_item_texts(n_items: int = 2000) -> list:
+def get_item_texts(n_items: int = 10000) -> list:
     """Generate diverse product-like texts for bandit experiment."""
     categories = [
         "Electronics", "Clothing", "Home", "Books", "Sports", 
         "Toys", "Beauty", "Garden", "Automotive", "Office",
-        "Food", "Pet Supplies", "Music", "Movies", "Health"
+        "Food", "Pet Supplies", "Music", "Movies", "Health",
+        "Jewelry", "Shoes", "Outdoors", "Baby", "Tools"
     ]
     
     adjectives = [
         "Premium", "Affordable", "High-quality", "Durable", "Compact", 
         "Professional", "Lightweight", "Versatile", "Innovative", "Classic",
-        "Modern", "Eco-friendly", "Budget", "Luxury", "Essential"
+        "Modern", "Eco-friendly", "Budget", "Luxury", "Essential",
+        "Portable", "Wireless", "Smart", "Ergonomic", "Stylish"
     ]
     
     products = [
@@ -35,7 +37,9 @@ def get_item_texts(n_items: int = 2000) -> list:
         "ball", "racket", "weights", "mat", "gear",
         "toy", "game", "puzzle", "blocks", "doll",
         "cream", "lotion", "serum", "brush", "kit",
-        "plant", "pot", "tools", "seeds", "fertilizer"
+        "plant", "pot", "tools", "seeds", "fertilizer",
+        "watch", "ring", "necklace", "bracelet", "earrings",
+        "sneakers", "boots", "sandals", "slippers", "heels"
     ]
     
     features = [
@@ -48,7 +52,12 @@ def get_item_texts(n_items: int = 2000) -> list:
         "trending now",
         "limited edition",
         "exclusive design",
-        "award winning"
+        "award winning",
+        "editor's choice",
+        "staff pick",
+        "most popular",
+        "value pack",
+        "gift ready"
     ]
     
     items = []
@@ -90,16 +99,16 @@ def compute_reward(item: dict, context_category: str, user_preference: float) ->
 
 
 def run_bandit_experiment():
-    """Run bandit experiment with real embeddings at larger scale."""
+    """Run bandit experiment with real embeddings at large scale."""
     
     print("\n" + "="*60)
-    print("LARGE-SCALE BANDIT EXPERIMENT (10K rounds)")
+    print("LARGE-SCALE BANDIT EXPERIMENT")
     print("="*60)
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    n_items = 2000
+    n_items = 3000
     n_rounds = 10000
-    k_candidates = 50
+    k_candidates = 500
     
     items = get_item_texts(n_items)
     texts = [item['text'] for item in items]
@@ -133,7 +142,7 @@ def run_bandit_experiment():
             model.eval()
             
             embeddings = []
-            batch_size = 64
+            batch_size = 128
             
             for i in tqdm(range(0, len(texts), batch_size), desc="BERT encoding"):
                 batch = texts[i:i+batch_size]
@@ -152,14 +161,14 @@ def run_bandit_experiment():
             from sentence_transformers import SentenceTransformer
             
             model = SentenceTransformer('princeton-nlp/sup-simcse-bert-base-uncased')
-            all_embeddings[model_name] = model.encode(texts, show_progress_bar=True, batch_size=64)
+            all_embeddings[model_name] = model.encode(texts, show_progress_bar=True, batch_size=128)
             del model
             gc.collect()
         
         print(f"Embeddings shape: {all_embeddings[model_name].shape}")
     
     for model_name in models_to_test:
-        print(f"\n--- Running 10K Bandit with {model_name.upper()} ---")
+        print(f"\n--- Running 10K Bandit with {model_name.upper()} (500 candidates/round) ---")
         
         embeddings = all_embeddings[model_name]
         
@@ -213,7 +222,7 @@ def run_bandit_experiment():
         print(f"  Mean reward (last 1000): {np.mean(rewards[-1000:]):.3f}")
     
     print("\n" + "-"*60)
-    print("10K BANDIT RESULTS")
+    print("10K BANDIT RESULTS (500 candidates/round)")
     print("-"*60)
     
     bert_regret = results['models']['bert']['final_regret']
