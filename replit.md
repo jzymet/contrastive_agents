@@ -1,10 +1,10 @@
 # Contrastive RL for Massive Action Spaces
 
-Research platform for studying how contrastive embeddings (SimCSE, CLIP) enable efficient exploration-exploitation in large action spaces through optimal geometric properties (alignment + uniformity).
+Research platform for ICML 2026 paper studying how contrastive embeddings (SimCSE, Jina, LLM2Vec) enable efficient exploration-exploitation in large action spaces through optimal geometric properties (alignment + uniformity).
 
-## Project Overview
+## Core Thesis
 
-This project implements experiments for a research paper on scaling reinforcement learning to massive action spaces using contrastive embeddings. The key insight is that contrastive uniformity reduces the coverage metric ρ(k,K) by ensuring that a small random sample k covers the full action space K efficiently.
+Reconstruction-based embeddings (BERT, RoBERTa, LLaMA) produce anisotropic representations with effective dimension ~50, causing linear regret in RL. Contrastive embeddings produce uniform representations with effective dimension ~200, enabling sublinear regret and efficient exploration.
 
 ## Project Structure
 
@@ -12,93 +12,107 @@ This project implements experiments for a research paper on scaling reinforcemen
 contrastive-rl/
 ├── app.py                    # Main Streamlit dashboard
 ├── src/
-│   ├── embeddings/          # Embedding models (SimCSE, CLIP, BERT)
-│   │   ├── cache.py         # Embedding caching utilities
-│   │   ├── simcse.py        # SimCSE and BERT encoders
-│   │   └── clip_encoder.py  # CLIP encoder for multimodal
-│   ├── agents/              # RL agents
-│   │   ├── bandit.py        # Thompson Sampling, UCB bandits
-│   │   └── a2c.py           # A2C with Transformer encoder
-│   ├── datasets/            # Dataset loaders
-│   │   ├── amazon.py        # Amazon Electronics (synthetic)
-│   │   ├── toolbench.py     # ToolBench API dataset
-│   │   └── math_data.py     # GSM8K and MATH-500
-│   └── utils/               # Utility functions
-│       ├── sampling.py      # Uniform sampling, coverage metrics
-│       └── metrics.py       # Experiment metrics
-├── experiments/             # Experiment runners
-│   ├── recsys_experiments.py
-│   ├── tool_experiments.py
-│   └── math_experiments.py
-├── config/                  # Configuration files
-│   ├── recsys_config.yaml
-│   ├── tool_config.yaml
-│   └── math_config.yaml
-├── cache/                   # Cached embeddings
-└── results/                 # Experiment results
+│   ├── embeddings/           # Embedding extractors
+│   │   ├── base.py           # BaseEmbeddingExtractor, EmbeddingCache
+│   │   ├── extractors.py     # BERT, RoBERTa, SimCSE, Jina extractors
+│   │   ├── simcse.py         # Legacy SimCSE encoder
+│   │   └── clip_encoder.py   # CLIP encoder for multimodal
+│   ├── models/               # RL agents
+│   │   ├── neural_ts.py      # NeuralTSBandit, SimpleNeuralBandit
+│   │   └── reward_transformer.py  # RewardTransformer, A2CTransformerAgent
+│   ├── analysis/             # Theory validation
+│   │   ├── eigenvalues.py    # Eigenvalue spectra, d_eff computation
+│   │   ├── rkhs.py           # RKHS norm analysis
+│   │   └── coverage.py       # Coverage metric ρ(k,K)
+│   ├── datasets/             # Dataset loaders
+│   │   ├── amazon.py         # Amazon Electronics
+│   │   ├── toolbench.py      # ToolBench API dataset
+│   │   └── math_data.py      # GSM8K and MATH-500
+│   └── utils/                # Utility functions
+│       ├── sampling.py       # Uniform sampling, coverage metrics
+│       └── metrics.py        # Experiment metrics
+├── experiments/              # Experiment runners
+│   ├── 01_embedding_analysis.py   # Priority 0: Theory validation
+│   ├── 02_recsys_bandit.py        # Priority 1: Neural TS bandit
+│   ├── 03_tools_a2c.py            # Priority 2: Tool selection A2C
+│   └── 04_math_a2c.py             # Priority 3: Math reasoning (optional)
+├── config/                   # Configuration files
+├── data/                     # Data and embeddings cache
+│   └── embeddings/           # Cached embeddings
+└── results/                  # Experiment results
+    ├── plots/                # Generated figures
+    └── metrics/              # JSON results
 ```
+
+## Embedding Models (6 total)
+
+### Anisotropic (Reconstruction-based - predicted to fail):
+1. **BERT-base-uncased** - Expected d_eff ≈ 40
+2. **RoBERTa-base** - Expected d_eff ≈ 50
+3. **LLaMA-3-8B-base** - Expected d_eff ≈ 60
+
+### Contrastive (Uniform - predicted to succeed):
+4. **SimCSE-base** - Expected d_eff ≈ 200
+5. **Jina-embeddings-v3** - Expected d_eff ≈ 220
+6. **LLM2Vec-LLaMA-3** - Expected d_eff ≈ 210
 
 ## Three Use Cases
 
-### 1. Personalized Recommendation (RecSys)
-- **Dataset**: Amazon Electronics (synthetic, extensible)
-- **Action Space**: ~10K-500K items
-- **Formulations**: Contextual Bandit (single-step), A2C (10-step sessions)
-- **Embeddings**: SimCSE (text), CLIP (multimodal)
+### 1. Personalized Recommendation (RecSys) - Priority 1
+- **Dataset**: Amazon Electronics (10K items)
+- **Agent**: Neural Thompson Sampling
+- **Metric**: Cumulative regret over 10,000 rounds
 
-### 2. LLM Tool Selection
-- **Dataset**: ToolBench-inspired (16K APIs)
-- **Tasks**: I1 (single-tool), I2 (same-category), I3 (cross-category)
-- **Formulations**: Contextual Bandit, A2C for tool chaining
-- **Embeddings**: SimCSE on tool descriptions
+### 2. LLM Tool Selection - Priority 2
+- **Dataset**: ToolBench (16K APIs)
+- **Tasks**: I3 cross-category tool chaining
+- **Agent**: A2C with RewardTransformer (36M params)
+- **Metric**: Task success rate
 
-### 3. Math Reasoning
-- **Dataset**: GSM8K (train) → MATH-500 (test)
-- **Action Space**: 50-200 reasoning step candidates per state
-- **Verification**: SymPy for arithmetic (FREE!)
-- **Positioning**: vs rStar-Math (ICML 2025 Oral)
-- **Key Metric**: Rollouts needed to reach solve rate threshold
+### 3. Math Reasoning - Priority 3 (Optional)
+- **Dataset**: GSM8K → MATH-500
+- **Agent**: A2C with reasoning step selection
+- **Metric**: Solve rate, rollouts to threshold
 
 ## Key Theoretical Concepts
 
+### Effective Dimension (d_eff)
+Participation ratio: d_eff = (Σλ_i)² / (Σλ_i²)
+Higher d_eff = more uniformly distributed = better coverage
+
 ### Coverage Metric ρ(k,K)
-Expected distance from any action to its nearest sample in a k-sized random subset. Lower is better.
+Expected distance from any action to its nearest sample in a k-sized random subset.
+Lower ρ = better coverage = more efficient exploration.
 
-### Uniformity Advantage
-SimCSE embeddings are uniformly distributed on the hypersphere, leading to better coverage than anisotropic BERT embeddings.
-
-### Eluder Dimension
-Contrastive uniformity reduces effective Eluder dimension, improving regret bounds in bandit/RL settings.
+### RKHS Norm
+||R||_RKHS = sqrt(Σ w_i² / λ_i)
+High RKHS norm = reward function poorly represented = linear regret.
 
 ## Running the Application
 
-The Streamlit dashboard runs on port 5000:
 ```bash
 streamlit run app.py --server.port 5000
 ```
 
 ## Key Dependencies
 - torch, transformers, sentence-transformers
-- sympy (math verification)
+- scipy, scikit-learn (metrics and analysis)
 - streamlit, plotly (visualization)
-- scipy, scikit-learn (metrics)
+- sympy (math verification)
 
-## Configuration
+## Recent Changes (January 15, 2026)
 
-Each use case has its own config file in `config/`:
-- `recsys_config.yaml`: RecSys experiment parameters
-- `tool_config.yaml`: Tool selection parameters
-- `math_config.yaml`: Math reasoning parameters
+- Major revamp based on new ICML 2026 prompt
+- Expanded to 6 embedding models (3 anisotropic + 3 contrastive)
+- Added unified EmbeddingExtractor with PCA dimension standardization
+- Implemented NeuralTSBandit for RecSys experiments
+- Added RewardTransformer (36M param critic) for A2C
+- Created comprehensive embedding analysis module (eigenvalues, d_eff, RKHS, coverage)
+- Updated Streamlit dashboard with theory validation visualizations
+- Restructured project with src/models, src/analysis directories
 
-## Usage Notes
-
-1. **Demo Mode**: The app includes a demo mode with synthetic data for quick testing
-2. **Full Mode**: Load actual embeddings from pretrained models for real experiments
-3. **Caching**: Embeddings are cached to disk to avoid recomputation
-
-## Recent Changes
-
-- Initial implementation of all three use cases
-- Streamlit dashboard with tabs for each experiment type
-- Visualization: coverage plots, regret curves, strategy distribution
-- Synthetic datasets for rapid prototyping
+## Timeline (13 days to deadline)
+- Days 1-2: Embedding Analysis (eigenvalue spectra, d_eff, coverage)
+- Days 3-6: RecSys Neural Bandit experiments
+- Days 7-12: Tools A2C experiments
+- Days 13-14: Paper writing
