@@ -106,17 +106,25 @@ def load_real_coverage_results():
 def load_real_bandit_results():
     """Load real bandit experiment results from JSON."""
     try:
-        with open('results/metrics/real_bandit_results.json', 'r') as f:
+        with open('results/metrics/real_bandit_10k_results.json', 'r') as f:
             data = json.load(f)
         
-        results = {}
+        results = {
+            'regret_curves': {},
+            'summary': {}
+        }
         for model_name, model_data in data.get('models', {}).items():
             regret = model_data.get('cumulative_regret', [])
             full_regret = []
             for i, r in enumerate(regret):
-                full_regret.extend([r] * 10)
-            results[model_name] = full_regret[:1000] if full_regret else []
-        return results if results else None
+                full_regret.extend([r] * 100)
+            results['regret_curves'][model_name] = full_regret[:10000] if full_regret else []
+            results['summary'][model_name] = {
+                'final_regret': model_data.get('final_regret', 0),
+                'mean_reward': model_data.get('mean_reward', 0),
+                'reward_last_1000': model_data.get('reward_last_1000', 0)
+            }
+        return results if results['regret_curves'] else None
     except Exception:
         return None
 
@@ -475,45 +483,106 @@ def show_recsys_experiments():
     """Show RecSys bandit experiments."""
     st.header("Use Case 1: Neural Contextual Bandit (RecSys)")
     
-    st.markdown("""
-    **Dataset:** Amazon Product Recommendation (10K items)  
-    **Agent:** Neural Thompson Sampling  
-    **Metric:** Cumulative regret over 10,000 rounds
+    real_bandit = load_real_bandit_results()
     
-    *Expected:* Contrastive embeddings achieve 40-50% lower regret than anisotropic.
-    """)
-    
-    regret_data = generate_demo_regret_data(5000)
-    
-    st.subheader("Cumulative Regret Curves")
-    fig_regret = create_regret_plot(regret_data)
-    st.plotly_chart(fig_regret, use_container_width=True)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("BERT Final Regret", f"{regret_data['bert'][-1]:.0f}", delta="High", delta_color="inverse")
-    with col2:
-        st.metric("SimCSE Final Regret", f"{regret_data['simcse'][-1]:.0f}", 
-                 delta=f"-{100*(regret_data['bert'][-1]-regret_data['simcse'][-1])/regret_data['bert'][-1]:.0f}%")
-    with col3:
-        st.metric("Jina Final Regret", f"{regret_data['jina'][-1]:.0f}",
-                 delta=f"-{100*(regret_data['bert'][-1]-regret_data['jina'][-1])/regret_data['bert'][-1]:.0f}%")
-    
-    st.subheader("Results Summary")
-    results_data = []
-    for model in ALL_MODELS:
-        if model in regret_data:
-            model_type = 'Anisotropic' if model in ANISOTROPIC_MODELS else 'Contrastive'
-            final_regret = regret_data[model][-1]
-            results_data.append({
-                'Model': model,
-                'Type': model_type,
-                'Final Regret': f"{final_regret:.0f}",
-                'vs BERT': f"{100*(regret_data['bert'][-1]-final_regret)/regret_data['bert'][-1]:.1f}%" if model != 'bert' else '-'
-            })
-    
-    st.dataframe(pd.DataFrame(results_data), use_container_width=True)
+    if real_bandit:
+        st.success("Showing REAL 10K bandit experiment (2000 items, 50 candidates/round)")
+        
+        st.markdown("""
+        **Experiment:** 2000 product items, 10,000 rounds, 50 candidates per round  
+        **Agent:** Simple Neural Bandit with UCB exploration  
+        **Metric:** Cumulative regret
+        """)
+        
+        st.subheader("Cumulative Regret Curves (10K rounds)")
+        fig = go.Figure()
+        for model_name, regret in real_bandit['regret_curves'].items():
+            fig.add_trace(go.Scatter(
+                x=list(range(len(regret))),
+                y=regret,
+                mode='lines',
+                name=model_name.upper(),
+                line=dict(color=COLORS.get(model_name, 'gray'), width=2)
+            ))
+        
+        fig.update_layout(
+            title='Cumulative Regret: BERT vs SimCSE (10K rounds)',
+            xaxis_title='Rounds',
+            yaxis_title='Cumulative Regret',
+            height=450
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        col1, col2, col3 = st.columns(3)
+        
+        bert_summary = real_bandit['summary'].get('bert', {})
+        simcse_summary = real_bandit['summary'].get('simcse', {})
+        
+        bert_regret = bert_summary.get('final_regret', 0)
+        simcse_regret = simcse_summary.get('final_regret', 0)
+        improvement = (bert_regret - simcse_regret) / bert_regret * 100 if bert_regret > 0 else 0
+        
+        with col1:
+            st.metric("BERT Final Regret", f"{bert_regret:.0f}")
+        with col2:
+            st.metric("SimCSE Final Regret", f"{simcse_regret:.0f}", 
+                     delta=f"{improvement:.1f}% lower" if improvement > 0 else f"{-improvement:.1f}% higher")
+        with col3:
+            st.metric("SimCSE Last 1K Reward", f"{simcse_summary.get('reward_last_1000', 0):.3f}",
+                     delta=f"+{(simcse_summary.get('reward_last_1000', 0) - bert_summary.get('reward_last_1000', 0)):.3f} vs BERT")
+        
+        st.subheader("Results Summary")
+        st.dataframe(pd.DataFrame([
+            {'Model': 'BERT', 'Type': 'Anisotropic', 'Final Regret': f"{bert_regret:.0f}", 
+             'Mean Reward': f"{bert_summary.get('mean_reward', 0):.3f}",
+             'Last 1K Reward': f"{bert_summary.get('reward_last_1000', 0):.3f}"},
+            {'Model': 'SimCSE', 'Type': 'Contrastive', 'Final Regret': f"{simcse_regret:.0f}",
+             'Mean Reward': f"{simcse_summary.get('mean_reward', 0):.3f}",
+             'Last 1K Reward': f"{simcse_summary.get('reward_last_1000', 0):.3f}"}
+        ]), use_container_width=True)
+        
+    else:
+        st.info("No real bandit results available. Showing demo data.")
+        
+        st.markdown("""
+        **Dataset:** Amazon Product Recommendation (10K items)  
+        **Agent:** Neural Thompson Sampling  
+        **Metric:** Cumulative regret over 10,000 rounds
+        
+        *Expected:* Contrastive embeddings achieve lower regret than anisotropic.
+        """)
+        
+        regret_data = generate_demo_regret_data(5000)
+        
+        st.subheader("Cumulative Regret Curves")
+        fig_regret = create_regret_plot(regret_data)
+        st.plotly_chart(fig_regret, use_container_width=True)
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("BERT Final Regret", f"{regret_data['bert'][-1]:.0f}", delta="High", delta_color="inverse")
+        with col2:
+            st.metric("SimCSE Final Regret", f"{regret_data['simcse'][-1]:.0f}", 
+                     delta=f"-{100*(regret_data['bert'][-1]-regret_data['simcse'][-1])/regret_data['bert'][-1]:.0f}%")
+        with col3:
+            st.metric("Jina Final Regret", f"{regret_data['jina'][-1]:.0f}",
+                     delta=f"-{100*(regret_data['bert'][-1]-regret_data['jina'][-1])/regret_data['bert'][-1]:.0f}%")
+        
+        st.subheader("Results Summary")
+        results_data = []
+        for model in ALL_MODELS:
+            if model in regret_data:
+                model_type = 'Anisotropic' if model in ANISOTROPIC_MODELS else 'Contrastive'
+                final_regret = regret_data[model][-1]
+                results_data.append({
+                    'Model': model,
+                    'Type': model_type,
+                    'Final Regret': f"{final_regret:.0f}",
+                    'vs BERT': f"{100*(regret_data['bert'][-1]-final_regret)/regret_data['bert'][-1]:.1f}%" if model != 'bert' else '-'
+                })
+        
+        st.dataframe(pd.DataFrame(results_data), use_container_width=True)
 
 
 def show_tool_experiments():
