@@ -1,0 +1,38 @@
+dataset:
+  train: "gsm8k"
+  test: "math500"
+  n_train_problems: 100
+  n_test_problems: 50
+
+experiment:
+  n_episodes: 100
+  max_steps: 20
+  n_candidates: 100
+
+embeddings:
+  simcse_model: "princeton-nlp/sup-simcse-bert-base-uncased"
+  bert_model: "bert-base-uncased"
+  batch_size: 32
+  cache_dir: "cache"
+
+verification:
+  use_sympy: true
+  
+a2c:
+  embedding_dim: 768
+  n_heads: 8
+  n_layers: 2
+  dropout: 0.1
+  learning_rate: 0.0003
+  gamma: 0.99
+
+metrics:
+  - solve_rate
+  - rollouts_to_70
+  - strategy_entropy
+  - unique_strategies
+  - coverage_rho
+
+positioning:
+  compare_to: "rStar-Math"
+  key_insight: "Uniformity enables efficient search"

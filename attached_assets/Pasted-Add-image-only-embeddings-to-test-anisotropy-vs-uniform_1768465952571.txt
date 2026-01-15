@@ -1,0 +1,126 @@
+Add image-only embeddings to test anisotropy vs uniformity on visual modality.
+
+Amazon products have images - use image embeddings instead of text.
+
+Anisotropic baseline:
+1. ResNet-50 (ImageNet supervised)
+   - torchvision.models.resnet50(pretrained=True)
+   - Extract penultimate layer (2048-dim)
+   - Expected d_eff ≈ 60-80
+   - Hypothesis: Classification training creates anisotropy
+
+Contrastive comparisons:
+2. MoCo v2 (self-supervised contrastive on images)
+   - facebookresearch/moco (use their pretrained checkpoint)
+   - 2048-dim → project to 768
+   - Expected d_eff ≈ 200-220
+   - Direct image equivalent of SimCSE
+
+3. CLIP image encoder (multimodal contrastive)
+   - openai/clip-vit-base-patch32
+   - Extract image_embeds (512-dim)
+   - Expected d_eff ≈ 180-200
+
+4. Jina-CLIP image encoder (modern multimodal)
+   - jinaai/jina-clip-v1
+   - Extract image embeddings
+   - Expected d_eff ≈ 200-220
+
+Implementation:
+```python
+import torch
+import torchvision.models as models
+from torchvision import transforms
+from PIL import Image
+import requests
+
+# Image preprocessing
+preprocess = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                        std=[0.229, 0.224, 0.225]),
+])
+
+# 1. ResNet-50 (anisotropic)
+def get_resnet_embedding(image_url):
+    resnet = models.resnet50(pretrained=True)
+    resnet.eval()
+    
+    # Remove final classification layer
+    resnet = torch.nn.Sequential(*list(resnet.children())[:-1])
+    
+    # Load image
+    image = Image.open(requests.get(image_url, stream=True).raw)
+    input_tensor = preprocess(image).unsqueeze(0)
+    
+    # Extract features
+    with torch.no_grad():
+        features = resnet(input_tensor).squeeze()  # (2048,)
+    
+    # Project to 768-dim
+    features_768 = pca_project(features.numpy(), target_dim=768)
+    return features_768
+
+# 2. MoCo v2 (contrastive)
+def get_moco_embedding(image_url):
+    # Load MoCo v2 checkpoint
+    checkpoint = torch.load('moco_v2_800ep_pretrain.pth.tar')
+    model = models.resnet50()
+    model.load_state_dict(checkpoint['state_dict'], strict=False)
+    model.eval()
+    
+    # Remove classifier
+    model = torch.nn.Sequential(*list(model.children())[:-1])
+    
+    # Extract features (same as ResNet)
+    image = Image.open(requests.get(image_url, stream=True).raw)
+    input_tensor = preprocess(image).unsqueeze(0)
+    
+    with torch.no_grad():
+        features = model(input_tensor).squeeze()
+    
+    return pca_project(features.numpy(), target_dim=768)
+
+# 3. CLIP image encoder
+def get_clip_image_embedding(image_url):
+    from transformers import CLIPProcessor, CLIPModel
+    
+    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    
+    image = Image.open(requests.get(image_url, stream=True).raw)
+    inputs = processor(images=image, return_tensors="pt")
+    
+    with torch.no_grad():
+        image_features = model.get_image_features(**inputs)
+    
+    # CLIP outputs 512-dim
+    return pca_project(image_features.squeeze().numpy(), target_dim=768)
+
+# 4. Jina-CLIP image encoder  
+def get_jina_clip_embedding(image_url):
+    from transformers import AutoModel
+    
+    model = AutoModel.from_pretrained("jinaai/jina-clip-v1", trust_remote_code=True)
+    
+    image = Image.open(requests.get(image_url, stream=True).raw)
+    # Jina-CLIP has its own preprocessing
+    image_emb = model.encode_image([image])
+    
+    return pca_project(image_emb[0], target_dim=768)
+```
+
+Expected results:
+- ResNet-50: High regret (anisotropic, d_eff ≈ 70)
+- MoCo v2: Low regret (contrastive, d_eff ≈ 210)
+- CLIP: Low regret (multimodal contrastive, d_eff ≈ 190)
+- Jina-CLIP: Lowest regret (modern contrastive, d_eff ≈ 220)
+
+This validates: Anisotropy vs uniformity holds across modalities (text AND vision)
+
+Key narrative:
+"Supervised classification (ResNet, BERT) creates anisotropy.
+Contrastive learning (MoCo, SimCSE, CLIP) creates uniformity.
+The benefit holds for text, images, and multimodal embeddings."
