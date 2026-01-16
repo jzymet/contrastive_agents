@@ -1,2 +1,9 @@
-from .bandit import ThompsonSamplingBandit, UCBBandit
-from .a2c import A2CAgent, TransformerEncoder
+from .bandit import LinearContextualBandit, NeuralContextualBandit
+from .a2c import RewardTransformer, A2CTrainer
+
+__all__ = [
+    'LinearContextualBandit',
+    'NeuralContextualBandit',
+    'RewardTransformer',
+    'A2CTrainer'
+]
