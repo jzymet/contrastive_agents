@@ -51,7 +51,12 @@ class RewardTransformer(nn.Module):
             nn.Linear(d_model, 1)
         )
         
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            self.device = "cuda"
+        elif torch.backends.mps.is_available():
+            self.device = "mps"
+        else:
+            self.device = "cpu"
         self.to(self.device)
         
         total_params = sum(p.numel() for p in self.parameters())
