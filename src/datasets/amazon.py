@@ -163,45 +163,54 @@ class AmazonDataset:
                 urls.append(None)
         return urls
 
-    def compute_true_reward(self, item_idx: int, context_items: List[int]) -> float:
+    def compute_reward_prob(self, item_idx: int, user_embedding: np.ndarray, item_embeddings: np.ndarray) -> float:
         """
-        Ground truth reward function (unknown to bandit).
-
-        Based on:
-        - Category match with context (50% weight)
-        - Item rating (30% weight)  
-        - Price appropriateness (20% weight)
+        Compute expected reward probability based on embedding similarity.
+        
+        This directly tests the embedding geometry hypothesis:
+        - Good embeddings (high d_eff) = better similarity estimates = better recommendations
+        
+        Args:
+            item_idx: Index of item in dataset
+            user_embedding: User preference embedding (normalized)
+            item_embeddings: All item embeddings matrix
+            
+        Returns:
+            reward_prob: Expected reward in [0, 1]
         """
         item = self.items[item_idx]
-
-        # Category match
-        if context_items:
-            context_categories = [self.items[i]['category'] for i in context_items]
-            category_match = 1.0 if item['category'] in context_categories else 0.0
-        else:
-            category_match = 0.5  # Neutral if no context
-
-        # Rating (normalize to [0, 1])
+        
+        # Embedding similarity (primary signal - 60% weight)
+        item_emb = item_embeddings[item_idx]
+        item_emb = item_emb / (np.linalg.norm(item_emb) + 1e-8)
+        similarity = np.dot(user_embedding, item_emb)
+        similarity_score = (similarity + 1) / 2  # Map [-1, 1] to [0, 1]
+        
+        # Item quality (rating - 25% weight)
         rating_score = item['avg_rating'] / 5.0
-
-        # Price (prefer mid-range $20-100)
+        
+        # Price appropriateness (15% weight)
         price = item['price']
         if 20 <= price <= 100:
             price_score = 1.0
         elif price < 20:
-            price_score = 0.5
+            price_score = 0.6
         else:
-            price_score = max(0.0, 1.0 - (price - 100) / 200)
-
+            price_score = max(0.2, 1.0 - (price - 100) / 300)
+        
         # Weighted combination
         reward_prob = (
-            0.5 * category_match +
-            0.3 * rating_score +
-            0.2 * price_score
+            0.60 * similarity_score +
+            0.25 * rating_score +
+            0.15 * price_score
         )
-
-        # Binarize with probability = reward_prob
-        return 1.0 if np.random.random() < reward_prob else 0.0
+        
+        return float(np.clip(reward_prob, 0, 1))
+    
+    def sample_reward(self, item_idx: int, user_embedding: np.ndarray, item_embeddings: np.ndarray) -> float:
+        """Sample binary reward from reward probability."""
+        prob = self.compute_reward_prob(item_idx, user_embedding, item_embeddings)
+        return 1.0 if np.random.random() < prob else 0.0
 
     def __len__(self) -> int:
         return len(self.items)
