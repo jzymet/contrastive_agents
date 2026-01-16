@@ -19,7 +19,10 @@ class BERTExtractor(BaseEmbeddingExtractor):
     def _load_model(self):
         from transformers import AutoModel, AutoTokenizer
         
-        if torch.backends.mps.is_available():
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+            print("✓ BERT: Using CUDA")
+        elif torch.backends.mps.is_available():
             self.device = torch.device("mps")
             print("✓ BERT: Using MPS")
         else:
@@ -53,7 +56,9 @@ class BERTExtractor(BaseEmbeddingExtractor):
                 batch_embs = last_hidden.mean(dim=1).cpu().numpy()
                 embeddings.append(batch_embs)
             
-            if self.device.type == 'mps':
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+            elif self.device.type == 'mps':
                 torch.mps.empty_cache()
         
         return np.vstack(embeddings)
@@ -71,7 +76,10 @@ class RoBERTaExtractor(BaseEmbeddingExtractor):
     def _load_model(self):
         from transformers import AutoModel, AutoTokenizer
         
-        if torch.backends.mps.is_available():
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+            print("✓ RoBERTa: Using CUDA")
+        elif torch.backends.mps.is_available():
             self.device = torch.device("mps")
             print("✓ RoBERTa: Using MPS")
         else:
@@ -105,7 +113,9 @@ class RoBERTaExtractor(BaseEmbeddingExtractor):
                 batch_embs = last_hidden.mean(dim=1).cpu().numpy()
                 embeddings.append(batch_embs)
             
-            if self.device.type == 'mps':
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+            elif self.device.type == 'mps':
                 torch.mps.empty_cache()
         
         return np.vstack(embeddings)
@@ -123,7 +133,10 @@ class SimCSEExtractor(BaseEmbeddingExtractor):
     def _load_model(self):
         from transformers import AutoModel, AutoTokenizer
         
-        if torch.backends.mps.is_available():
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+            print("✓ SimCSE: Using CUDA")
+        elif torch.backends.mps.is_available():
             self.device = torch.device("mps")
             print("✓ SimCSE: Using MPS")
         else:
@@ -160,8 +173,9 @@ class SimCSEExtractor(BaseEmbeddingExtractor):
                 batch_embs = cls_embeddings.cpu().numpy()
                 embeddings.append(batch_embs)
             
-            # Clear MPS cache
-            if self.device.type == 'mps':
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+            elif self.device.type == 'mps':
                 torch.mps.empty_cache()
         
         return np.vstack(embeddings)
