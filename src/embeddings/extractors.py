@@ -16,42 +16,11 @@ class BERTExtractor(BaseEmbeddingExtractor):
         self._load_model()
 
     def _load_model(self):
-        from transformers import AutoModel, AutoTokenizer
-
-        self.model = AutoModel.from_pretrained('bert-base-uncased')
-        self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-
-        if torch.cuda.is_available():
-            self.model = self.model.cuda()
-        self.model.eval()
+        from sentence_transformers import SentenceTransformer
+        self.model = SentenceTransformer('bert-base-uncased')
 
     def _extract_raw(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
-        embeddings = []
-
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i+batch_size]
-            
-            inputs = self.tokenizer(
-                batch_texts,
-                return_tensors='pt',
-                truncation=True,
-                max_length=512,
-                padding=True
-            )
-
-            if torch.cuda.is_available():
-                inputs = {k: v.cuda() for k, v in inputs.items()}
-
-            with torch.no_grad():
-                outputs = self.model(**inputs, output_hidden_states=True)
-                last_hidden = outputs.hidden_states[-1]
-                batch_embs = last_hidden.mean(dim=1).cpu().numpy()
-                embeddings.append(batch_embs)
-            
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-        return np.vstack(embeddings)
+        return self.model.encode(texts, show_progress_bar=True, batch_size=batch_size)
 
 
 class RoBERTaExtractor(BaseEmbeddingExtractor):
@@ -64,42 +33,11 @@ class RoBERTaExtractor(BaseEmbeddingExtractor):
         self._load_model()
 
     def _load_model(self):
-        from transformers import AutoModel, AutoTokenizer
-
-        self.model = AutoModel.from_pretrained('roberta-base')
-        self.tokenizer = AutoTokenizer.from_pretrained('roberta-base')
-
-        if torch.cuda.is_available():
-            self.model = self.model.cuda()
-        self.model.eval()
+        from sentence_transformers import SentenceTransformer
+        self.model = SentenceTransformer('roberta-base')
 
     def _extract_raw(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
-        embeddings = []
-
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i+batch_size]
-            
-            inputs = self.tokenizer(
-                batch_texts,
-                return_tensors='pt',
-                truncation=True,
-                max_length=512,
-                padding=True
-            )
-
-            if torch.cuda.is_available():
-                inputs = {k: v.cuda() for k, v in inputs.items()}
-
-            with torch.no_grad():
-                outputs = self.model(**inputs, output_hidden_states=True)
-                last_hidden = outputs.hidden_states[-1]
-                batch_embs = last_hidden.mean(dim=1).cpu().numpy()
-                embeddings.append(batch_embs)
-            
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-        return np.vstack(embeddings)
+        return self.model.encode(texts, show_progress_bar=True, batch_size=batch_size)
 
 
 class SimCSEExtractor(BaseEmbeddingExtractor):
