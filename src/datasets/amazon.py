@@ -40,7 +40,8 @@ class AmazonDataset:
         Stream-download products from one category.
         Stops at n_items (doesn't download full dataset).
         """
-        url = f"https://amazon-reviews-2023.github.io/data/{category}_metadata.jsonl.gz"
+        
+        url = f"https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/meta_categories/meta_{category}.jsonl.gz"
 
         print(f"Downloading {n_items} items from {category}...")
         items = []

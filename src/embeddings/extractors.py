@@ -5,6 +5,7 @@ from tqdm import tqdm
 
 from .base import BaseEmbeddingExtractor
 
+torch.set_num_threads(8)
 
 class BERTExtractor(BaseEmbeddingExtractor):
     """BERT-base-uncased embedding extractor (anisotropic)."""
@@ -17,40 +18,44 @@ class BERTExtractor(BaseEmbeddingExtractor):
 
     def _load_model(self):
         from transformers import AutoModel, AutoTokenizer
-
-        self.model = AutoModel.from_pretrained('bert-base-uncased')
+        
+        if torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+            print("✓ BERT: Using MPS")
+        else:
+            self.device = torch.device("cpu")
+            print("✓ BERT: Using CPU")
+        
         self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-
-        if torch.cuda.is_available():
-            self.model = self.model.cuda()
+        self.model = AutoModel.from_pretrained('bert-base-uncased')
+        self.model = self.model.to(self.device)
         self.model.eval()
 
-    def _extract_raw(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
+    def _extract_raw(self, texts: List[str], batch_size: int = 128) -> np.ndarray:
         embeddings = []
-
-        for i in range(0, len(texts), batch_size):
+        
+        for i in tqdm(range(0, len(texts), batch_size), desc="BERT"):
             batch_texts = texts[i:i+batch_size]
             
             inputs = self.tokenizer(
                 batch_texts,
-                return_tensors='pt',
+                padding=True,
                 truncation=True,
                 max_length=512,
-                padding=True
+                return_tensors='pt'
             )
-
-            if torch.cuda.is_available():
-                inputs = {k: v.cuda() for k, v in inputs.items()}
-
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
             with torch.no_grad():
                 outputs = self.model(**inputs, output_hidden_states=True)
+                # Mean pool over tokens (BERT standard for embeddings)
                 last_hidden = outputs.hidden_states[-1]
                 batch_embs = last_hidden.mean(dim=1).cpu().numpy()
                 embeddings.append(batch_embs)
             
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
+            if self.device.type == 'mps':
+                torch.mps.empty_cache()
+        
         return np.vstack(embeddings)
 
 
@@ -65,60 +70,101 @@ class RoBERTaExtractor(BaseEmbeddingExtractor):
 
     def _load_model(self):
         from transformers import AutoModel, AutoTokenizer
-
-        self.model = AutoModel.from_pretrained('roberta-base')
+        
+        if torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+            print("✓ RoBERTa: Using MPS")
+        else:
+            self.device = torch.device("cpu")
+            print("✓ RoBERTa: Using CPU")
+        
         self.tokenizer = AutoTokenizer.from_pretrained('roberta-base')
-
-        if torch.cuda.is_available():
-            self.model = self.model.cuda()
+        self.model = AutoModel.from_pretrained('roberta-base')
+        self.model = self.model.to(self.device)
         self.model.eval()
 
-    def _extract_raw(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
+    def _extract_raw(self, texts: List[str], batch_size: int = 128) -> np.ndarray:
         embeddings = []
-
-        for i in range(0, len(texts), batch_size):
+        
+        for i in tqdm(range(0, len(texts), batch_size), desc="RoBERTa"):
             batch_texts = texts[i:i+batch_size]
             
             inputs = self.tokenizer(
                 batch_texts,
-                return_tensors='pt',
+                padding=True,
                 truncation=True,
                 max_length=512,
-                padding=True
+                return_tensors='pt'
             )
-
-            if torch.cuda.is_available():
-                inputs = {k: v.cuda() for k, v in inputs.items()}
-
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
             with torch.no_grad():
                 outputs = self.model(**inputs, output_hidden_states=True)
+                # Mean pool over tokens
                 last_hidden = outputs.hidden_states[-1]
                 batch_embs = last_hidden.mean(dim=1).cpu().numpy()
                 embeddings.append(batch_embs)
             
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
+            if self.device.type == 'mps':
+                torch.mps.empty_cache()
+        
         return np.vstack(embeddings)
 
 
 class SimCSEExtractor(BaseEmbeddingExtractor):
     """SimCSE embedding extractor (contrastive, uniform)."""
-
+    
     def __init__(self, target_dim: int = 768):
         super().__init__(target_dim)
         self.model_name = 'simcse'
         self.embedding_dim = 768
         self._load_model()
-
+    
     def _load_model(self):
-        from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(
-            'princeton-nlp/sup-simcse-bert-base-uncased')
-
-    def _extract_raw(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
-        return self.model.encode(texts, show_progress_bar=False, batch_size=batch_size)
-
+        from transformers import AutoModel, AutoTokenizer
+        
+        if torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+            print("✓ SimCSE: Using MPS")
+        else:
+            self.device = torch.device("cpu")
+            print("✓ SimCSE: Using CPU")
+        
+        # Load SimCSE directly from transformers
+        self.tokenizer = AutoTokenizer.from_pretrained('princeton-nlp/sup-simcse-bert-base-uncased')
+        self.model = AutoModel.from_pretrained('princeton-nlp/sup-simcse-bert-base-uncased')
+        self.model = self.model.to(self.device)
+        self.model.eval()
+    
+    def _extract_raw(self, texts: List[str], batch_size: int = 128) -> np.ndarray:
+        embeddings = []
+        
+        for i in tqdm(range(0, len(texts), batch_size), desc="SimCSE"):
+            batch_texts = texts[i:i+batch_size]
+            
+            # Tokenize
+            inputs = self.tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors='pt'
+            )
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
+            # Extract embeddings
+            with torch.no_grad():
+                outputs = self.model(**inputs, output_hidden_states=True, return_dict=True)
+                # SimCSE uses [CLS] token (first token)
+                cls_embeddings = outputs.last_hidden_state[:, 0, :]
+                batch_embs = cls_embeddings.cpu().numpy()
+                embeddings.append(batch_embs)
+            
+            # Clear MPS cache
+            if self.device.type == 'mps':
+                torch.mps.empty_cache()
+        
+        return np.vstack(embeddings)
 
 class JinaExtractor(BaseEmbeddingExtractor):
     """Jina-embeddings-v3 extractor (contrastive, SOTA)."""
@@ -150,7 +196,7 @@ class JinaExtractor(BaseEmbeddingExtractor):
             self.use_sentence_transformer = True
             self.embedding_dim = 768
 
-    def _extract_raw(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
+    def _extract_raw(self, texts: List[str], batch_size: int = 128) -> np.ndarray:
         if self.use_sentence_transformer:
             return self.model.encode(texts, show_progress_bar=False, batch_size=batch_size)
 
@@ -222,7 +268,7 @@ class LLaMA3Extractor(BaseEmbeddingExtractor):
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model.eval()
 
-    def _extract_raw(self, texts: List[str], batch_size: int = 8) -> np.ndarray:
+    def _extract_raw(self, texts: List[str], batch_size: int = 128) -> np.ndarray:
         embeddings = []
 
         for i in range(0, len(texts), batch_size):
@@ -275,7 +321,7 @@ class LLM2VecExtractor(BaseEmbeddingExtractor):
             print(f"LLM2Vec not available: {e}. Using dummy.")
             self.use_llm2vec = False
 
-    def _extract_raw(self, texts: List[str], batch_size: int = 8) -> np.ndarray:
+    def _extract_raw(self, texts: List[str], batch_size: int = 128) -> np.ndarray:
         if not self.use_llm2vec:
             n = len(texts)
             embeddings = np.random.randn(n, 4096) / np.sqrt(4096)

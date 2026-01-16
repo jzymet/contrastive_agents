@@ -30,8 +30,12 @@ class NeuralContextualBandit:
         self.algorithm = algorithm
         self.ucb_alpha = ucb_alpha
 
-        self.device = torch.device(
-            'cuda' if use_cuda and torch.cuda.is_available() else 'cpu')
+        if use_cuda and torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        elif use_cuda and torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+        else:
+            self.device = torch.device('cpu')
 
         self.network = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
