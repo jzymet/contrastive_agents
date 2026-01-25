@@ -105,6 +105,28 @@ class NeuralContextualBandit:
 
         return mu, sigma
 
+    def predict_scores(self, candidate_embeddings: np.ndarray) -> np.ndarray:
+        """
+        Score all candidates (mean prediction, no exploration).
+
+        Args:
+            candidate_embeddings: (K, d) numpy array
+
+        Returns:
+            scores: (K,) array of predicted rewards
+        """
+        import torch
+
+        embeddings_tensor = torch.tensor(candidate_embeddings,
+                                         dtype=torch.float32).to(self.device)
+
+        with torch.no_grad():
+            scores = self.network(embeddings_tensor).squeeze()
+            if scores.dim() == 0:  # Single prediction
+                scores = scores.unsqueeze(0)
+
+        return scores.cpu().numpy()
+
     def predict_ts(self, candidate_embeddings: torch.Tensor) -> torch.Tensor:
         """Thompson Sampling: sample from posterior."""
         sampled_rewards = []
