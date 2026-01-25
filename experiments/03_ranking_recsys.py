@@ -33,12 +33,9 @@ def load_embeddings(cache_dir='../data/embeddings'):
         bert_item_embs = pickle.load(f)
     with open(cache_dir / 'simcse_embeddings.pkl', 'rb') as f:
         simcse_item_embs = pickle.load(f)
-    with open(cache_dir / 'bert_user_embeddings.pkl', 'rb') as f:
-        bert_user_embs = pickle.load(f)
-    with open(cache_dir / 'simcse_user_embeddings.pkl', 'rb') as f:
-        simcse_user_embs = pickle.load(f)
 
-    return bert_item_embs, simcse_item_embs, bert_user_embs, simcse_user_embs
+    # Don't load user embeddings - we compute them on-the-fly now
+    return bert_item_embs, simcse_item_embs
 
 
 def load_dataset(cache_file='../data/amazon_reviews/All_Beauty_processed.pkl'):
@@ -314,8 +311,7 @@ def main():
 
     # Load data
     dataset = load_dataset()
-    bert_item_embs, simcse_item_embs, bert_user_embs, simcse_user_embs = load_embeddings(
-    )
+    bert_item_embs, simcse_item_embs = load_embeddings()
 
     print("\n" + "=" * 60)
     print("DATASET STATISTICS")
