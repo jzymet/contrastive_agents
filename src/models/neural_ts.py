@@ -16,19 +16,24 @@ class NeuralContextualBandit:
             self,
             embedding_dim: int = 768,
             hidden_dim: int = 100,
-            lambda_reg: float = 1.0,
+            lambda_reg: float = 1.0,  # ← Already exists
+            weight_decay: float = 0.01,  # ← ADD THIS (L2 reg for optimizer)
             nu: float = 1.0,
             learning_rate: float = 0.01,
             algorithm: Literal['ts', 'ucb'] = 'ts',
             ucb_alpha: float = 1.0,
-            use_cuda: bool = False):
+            use_cuda: bool = False,
+            use_diagonal_approximation: bool = True):  # ← ADD THIS
+
         self.d = embedding_dim
         self.m = hidden_dim
         self.lambda_reg = lambda_reg
+        self.weight_decay = weight_decay  # ← ADD THIS
         self.nu = nu
         self.lr = learning_rate
         self.algorithm = algorithm
         self.ucb_alpha = ucb_alpha
+        self.use_diagonal = use_diagonal_approximation  # ← ADD THIS
 
         if use_cuda and torch.cuda.is_available():
             self.device = torch.device('cuda')
@@ -37,13 +42,15 @@ class NeuralContextualBandit:
         else:
             self.device = torch.device('cpu')
 
-        self.network = nn.Sequential(
-            nn.Linear(embedding_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        ).to(self.device)
+        self.network = nn.Sequential(nn.Linear(embedding_dim, hidden_dim),
+                                     nn.ReLU(), nn.Linear(hidden_dim,
+                                                          1)).to(self.device)
 
-        self.optimizer = optim.SGD(self.network.parameters(), lr=learning_rate)
+        self.optimizer = optim.SGD(
+            self.network.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay  # ← ADD THIS
+        )
 
         self.num_params = sum(p.numel() for p in self.network.parameters())
         self.U = torch.eye(self.num_params).to(self.device)
@@ -62,19 +69,39 @@ class NeuralContextualBandit:
         if not compute_variance:
             return mu, None
 
-        self.network.zero_grad()
-        mu_single = mu[0] if mu.dim() > 0 else mu
-        mu_single.backward(retain_graph=True)
+        if self.use_diagonal:
+            # Diagonal approximation (faster)
+            self.network.zero_grad()
+            mu_single = mu[0] if mu.dim() > 0 else mu
+            mu_single.backward(retain_graph=True)
 
-        grads = []
-        for p in self.network.parameters():
-            if p.grad is not None:
-                grads.append(p.grad.view(-1))
-        grad_vec = torch.cat(grads)
+            grads = []
+            for p in self.network.parameters():
+                if p.grad is not None:
+                    grads.append(p.grad.view(-1))
+            grad_vec = torch.cat(grads)
 
-        U_inv = torch.inverse(self.U)
-        sigma_sq = (grad_vec @ U_inv @ grad_vec) / self.m
-        sigma = torch.sqrt(self.lambda_reg * self.nu * sigma_sq)
+            # Diagonal approximation: U^-1 ≈ diag(1/U_ii)
+            U_diag = torch.diag(self.U)
+            U_inv_diag = 1.0 / (U_diag + 1e-6)  # Add epsilon for stability
+
+            sigma_sq = (grad_vec**2 @ U_inv_diag) / self.m
+            sigma = torch.sqrt(self.lambda_reg * self.nu * sigma_sq)
+        else:
+            # Full approximation (exact but slower)
+            self.network.zero_grad()
+            mu_single = mu[0] if mu.dim() > 0 else mu
+            mu_single.backward(retain_graph=True)
+
+            grads = []
+            for p in self.network.parameters():
+                if p.grad is not None:
+                    grads.append(p.grad.view(-1))
+            grad_vec = torch.cat(grads)
+
+            U_inv = torch.inverse(self.U)
+            sigma_sq = (grad_vec @ U_inv @ grad_vec) / self.m
+            sigma = torch.sqrt(self.lambda_reg * self.nu * sigma_sq)
 
         return mu, sigma
 
@@ -174,7 +201,12 @@ class NeuralContextualBandit:
                                         create_graph=False)
             grad_vec = torch.cat([g.view(-1) for g in grads])
 
-            self.U = self.U + torch.outer(grad_vec, grad_vec)
+            if self.use_diagonal:
+                # Diagonal approximation: only update diagonal
+                self.U = self.U + torch.diag(grad_vec**2)
+            else:
+                # Full update
+                self.U = self.U + torch.outer(grad_vec, grad_vec)
         except Exception:
             pass
 
@@ -206,12 +238,11 @@ class LinearContextualBandit:
     Uses closed-form posterior updates (no neural network).
     """
 
-    def __init__(
-            self,
-            embedding_dim: int = 768,
-            algorithm: Literal['ts', 'ucb'] = 'ts',
-            lambda_reg: float = 1.0,
-            ucb_alpha: float = 1.0):
+    def __init__(self,
+                 embedding_dim: int = 768,
+                 algorithm: Literal['ts', 'ucb'] = 'ts',
+                 lambda_reg: float = 1.0,
+                 ucb_alpha: float = 1.0):
         self.d = embedding_dim
         self.algorithm = algorithm
         self.lambda_reg = lambda_reg
@@ -252,10 +283,10 @@ class LinearContextualBandit:
         elif self.algorithm == 'ucb':
             means = candidate_embeddings @ theta
 
-            stds = np.sqrt(np.sum(
-                (candidate_embeddings @ self.B_inv) * candidate_embeddings,
-                axis=1
-            ))
+            stds = np.sqrt(
+                np.sum(
+                    (candidate_embeddings @ self.B_inv) * candidate_embeddings,
+                    axis=1))
 
             scores = means + self.ucb_alpha * stds
 
@@ -281,6 +312,38 @@ class LinearContextualBandit:
 
         u = self.B_inv @ embedding
         self.B_inv -= np.outer(u, u) / (1 + embedding @ u)
+
+    def predict_scores(self, candidate_embeddings: np.ndarray) -> np.ndarray:
+        """
+        Score all candidates for ranking (without exploration).
+
+        Args:
+            candidate_embeddings: (K, d) numpy array
+
+        Returns:
+            scores: (K,) array of predicted rewards
+        """
+        theta = self._get_theta()
+
+        if self.algorithm == 'ucb':
+            # Use mean prediction only (no exploration bonus for ranking)
+            scores = candidate_embeddings @ theta
+
+        elif self.algorithm == 'ts':
+            # Sample theta once for this round (consistent ranking)
+            try:
+                theta_sample = np.random.multivariate_normal(theta, self.B_inv)
+            except np.linalg.LinAlgError:
+                # Fallback to diagonal approximation
+                variances = np.diag(self.B_inv)
+                theta_sample = theta + np.random.randn(
+                    self.d) * np.sqrt(variances)
+            scores = candidate_embeddings @ theta_sample
+
+        else:
+            raise ValueError(f"Unknown algorithm: {self.algorithm}")
+
+        return scores
 
     def get_cumulative_regret(self,
                               optimal_rewards: Optional[List[float]] = None
