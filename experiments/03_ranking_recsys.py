@@ -113,26 +113,23 @@ def run_ranking_bandit(
     item_array = np.array([item_embs[asin] for asin in item_asins])
     asin_to_idx = {asin: i for i, asin in enumerate(item_asins)}
 
-    embedding_dim = item_array.shape[1]
+    # Compute actual feature dimensions
+    item_dim = item_array.shape[1]  # After any reduction
+    user_dim = len(next(iter(user_embs.values())))  # User representation dim
+    feature_dim = item_dim + user_dim  # Total
 
-    # OLD:
-    # bandit = LinearContextualBandit(
-    #     embedding_dim * 2,
-    #     algorithm='ucb',
-    #     ucb_alpha=1.0,
-    #     lambda_reg=1.0
-    # )
+    print(f"Feature dimensions: item={item_dim}, user={user_dim}, total={feature_dim}")
 
-    # NEW:
     if bandit_type == 'linear':
         bandit = LinearContextualBandit(
-            embedding_dim * 2,  # [item; user]
+            feature_dim,  # ← Changed from embedding_dim * 2
             algorithm='ucb',
             ucb_alpha=1.0,
-            lambda_reg=lambda_reg)
+            lambda_reg=lambda_reg
+        )
     elif bandit_type == 'neural':
         bandit = NeuralContextualBandit(
-            embedding_dim * 2,  # [item; user] 
+            feature_dim,  # ← Changed from embedding_dim * 2
             hidden_dim=hidden_dim,
             lambda_reg=lambda_reg,
             weight_decay=weight_decay,
@@ -140,7 +137,8 @@ def run_ranking_bandit(
             algorithm='ucb',
             ucb_alpha=1.0,
             use_cuda=False,
-            use_diagonal_approximation=use_diagonal)
+            use_diagonal_approximation=use_diagonal
+        )
     else:
         raise ValueError(f"Unknown bandit_type: {bandit_type}")
 
