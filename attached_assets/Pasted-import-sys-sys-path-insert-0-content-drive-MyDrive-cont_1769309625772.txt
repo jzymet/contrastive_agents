@@ -1,0 +1,130 @@
+import sys
+sys.path.insert(0, '/content/drive/MyDrive/contrastive_agents')
+
+from pathlib import Path
+import gzip
+import json
+import pickle
+import numpy as np
+from tqdm import tqdm
+
+# ===== STEP 1: Load raw data =====
+data_dir = Path('/content/drive/MyDrive/contrastive_agents/data/amazon')
+
+reviews = []
+with gzip.open(data_dir / 'All_Beauty.jsonl.gz', 'rt') as f:
+    for line in tqdm(f, desc="Loading reviews"):
+        reviews.append(json.loads(line))
+
+print(f"Loaded {len(reviews)} reviews")
+
+# Filter users with min interactions
+min_interactions = 3
+user_items = {}
+
+for review in reviews:
+    if review.get('verified_purchase', False):
+        user_id = review['user_id']
+        item_id = review['parent_asin']
+        rating = review.get('rating', 0)
+        timestamp = review.get('timestamp', 0)
+        
+        if user_id not in user_items:
+            user_items[user_id] = []
+        user_items[user_id].append((item_id, rating, timestamp))
+
+user_items = {u: items for u, items in user_items.items() 
+              if len(items) >= min_interactions}
+
+print(f"Users with {min_interactions}+ interactions: {len(user_items)}")
+
+# Split train/test
+train_histories = {}
+test_interactions = []
+
+for user_id, items in user_items.items():
+    items.sort(key=lambda x: x[2])
+    split_idx = max(1, int(len(items) * 0.8))
+    
+    train_histories[user_id] = items[:split_idx]
+    
+    for item_id, rating, timestamp in items[split_idx:]:
+        reward = 1.0 if rating >= 4 else 0.0
+        test_interactions.append((user_id, item_id, reward))
+
+print(f"Train users: {len(train_histories)}")
+print(f"Test interactions: {len(test_interactions)}")
+
+# Load metadata
+items_meta = {}
+with gzip.open(data_dir / 'meta_All_Beauty.jsonl.gz', 'rt') as f:
+    for line in tqdm(f, desc="Loading metadata"):
+        item = json.loads(line)
+        items_meta[item['parent_asin']] = item
+
+# Create item texts
+item_texts = {}
+all_items = set()
+for items in train_histories.values():
+    all_items.update([item_id for item_id, _, _ in items])
+for user_id, item_id, _ in test_interactions:
+    all_items.add(item_id)
+
+for item_id in all_items:
+    if item_id in items_meta:
+        meta = items_meta[item_id]
+        title = meta.get('title', '')
+        desc = ' '.join(meta.get('description', []))
+        text = f"{title} {desc}".strip()
+        if text:
+            item_texts[item_id] = text
+        else:
+            item_texts[item_id] = f"Product {item_id}"
+    else:
+        item_texts[item_id] = f"Product {item_id}"
+
+print(f"Items with text: {len(item_texts)}")
+
+# ===== STEP 2: Compute embeddings =====
+from contrastive_agents.src.embeddings import get_extractor
+
+embeddings_dir = Path('/content/drive/MyDrive/contrastive_agents/data/embeddings')
+embeddings_dir.mkdir(parents=True, exist_ok=True)
+
+asins = list(item_texts.keys())
+texts = [item_texts[asin] for asin in asins]
+
+# BERT
+print("\nBERT embeddings...")
+bert_encoder = get_extractor('bert')
+bert_embs_array = bert_encoder.encode(texts)
+bert_item_embs = {asin: bert_embs_array[i] for i, asin in enumerate(asins)}
+
+with open(embeddings_dir / 'bert_embeddings.pkl', 'wb') as f:
+    pickle.dump(bert_item_embs, f)
+print(f"✓ Saved {len(bert_item_embs)} BERT embeddings")
+
+# SimCSE
+print("\nSimCSE embeddings...")
+simcse_encoder = get_extractor('simcse')
+simcse_embs_array = simcse_encoder.encode(texts)
+simcse_item_embs = {asin: simcse_embs_array[i] for i, asin in enumerate(asins)}
+
+with open(embeddings_dir / 'simcse_embeddings.pkl', 'wb') as f:
+    pickle.dump(simcse_item_embs, f)
+print(f"✓ Saved {len(simcse_item_embs)} SimCSE embeddings")
+
+# ===== STEP 3: Save dataset =====
+dataset_dir = Path('/content/drive/MyDrive/contrastive_agents/data/amazon_reviews')
+dataset_dir.mkdir(parents=True, exist_ok=True)
+
+with open(dataset_dir / 'All_Beauty_processed.pkl', 'wb') as f:
+    pickle.dump({
+        'train_histories': train_histories,
+        'test_interactions': test_interactions
+    }, f)
+
+print("\n✓ All done!")
+print(f"Files saved to:")
+print(f"  - {embeddings_dir}/")
+print(f"  - {dataset_dir}/")
