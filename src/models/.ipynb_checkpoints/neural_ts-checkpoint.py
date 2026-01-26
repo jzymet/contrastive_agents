@@ -22,7 +22,7 @@ class NeuralContextualBandit:
             learning_rate: float = 0.01,
             algorithm: Literal['ts', 'ucb'] = 'ts',
             ucb_alpha: float = 1.0,
-            use_cuda: bool = True,
+            use_cuda: bool = False,
             use_diagonal_approximation: bool = True):  # ← ADD THIS
 
         self.d = embedding_dim
@@ -36,7 +36,6 @@ class NeuralContextualBandit:
         self.use_diagonal = use_diagonal_approximation  # ← ADD THIS
 
         if use_cuda and torch.cuda.is_available():
-            print("Bandit employing CUDA")
             self.device = torch.device('cuda')
         elif use_cuda and torch.backends.mps.is_available():
             self.device = torch.device('mps')
@@ -54,12 +53,7 @@ class NeuralContextualBandit:
         )
 
         self.num_params = sum(p.numel() for p in self.network.parameters())
-        if self.use_diagonal:
-            # Store only diagonal (1D vector)
-            self.U = torch.ones(self.num_params).to(self.device)
-        else:
-            # Full matrix
-            self.U = torch.eye(self.num_params).to(self.device)
+        self.U = torch.eye(self.num_params).to(self.device)
 
         self.total_rounds = 0
         self.rewards_history = []
@@ -87,8 +81,9 @@ class NeuralContextualBandit:
                     grads.append(p.grad.view(-1))
             grad_vec = torch.cat(grads)
 
-            # Diagonal approximation: U is already 1D, just invert element-wise
-            U_inv_diag = 1.0 / (self.U + 1e-6)  # ← FIXED: No torch.diag()!
+            # Diagonal approximation: U^-1 ≈ diag(1/U_ii)
+            U_diag = torch.diag(self.U)
+            U_inv_diag = 1.0 / (U_diag + 1e-6)  # Add epsilon for stability
 
             sigma_sq = (grad_vec**2 @ U_inv_diag) / self.m
             sigma = torch.sqrt(self.lambda_reg * self.nu * sigma_sq)
@@ -230,7 +225,7 @@ class NeuralContextualBandit:
 
             if self.use_diagonal:
                 # Diagonal approximation: only update diagonal
-                self.U = self.U + grad_vec**2  # ← FIXED: No torch.diag()!
+                self.U = self.U + torch.diag(grad_vec**2)
             else:
                 # Full update
                 self.U = self.U + torch.outer(grad_vec, grad_vec)

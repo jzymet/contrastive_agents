@@ -85,12 +85,11 @@ def run_ranking_bandit(
         user_embs: dict,
         n_rounds: int = 3000,
         n_candidates: int = 50,
-        update_mode = 'full',
-        bandit_type: str = 'neural',
-        hidden_dim: int = 100,
-        lambda_reg: float = 10.0,
-        weight_decay: float = 0.01,
-        use_diagonal: bool = True,
+        bandit_type: str = 'neural',  # ← ADD: 'linear' or 'neural'
+        hidden_dim: int = 100,  # ← ADD: for neural
+        lambda_reg: float = 10.0,  # ← CHANGE default to 10.0
+        weight_decay: float = 0.01,  # ← ADD: for neural
+        use_diagonal: bool = True,  # ← ADD: for neural
         seed: int = 42):
     """
     Ranking bandit experiment.
@@ -102,7 +101,6 @@ def run_ranking_bandit(
         n_rounds: Number of rounds to run
         n_candidates: Number of candidates per round (25-50)
         update_mode: 'full' = update on all candidates, 'selected_only' = update only on selected
-        bandit_type: 'linear' or 'neural'
         seed: Random seed
 
     Returns:
@@ -124,56 +122,54 @@ def run_ranking_bandit(
 
     if bandit_type == 'linear':
         bandit = LinearContextualBandit(
-            feature_dim,
+            feature_dim,  # ← Changed from embedding_dim * 2
             algorithm='ucb',
             ucb_alpha=1.0,
             lambda_reg=lambda_reg
         )
     elif bandit_type == 'neural':
         bandit = NeuralContextualBandit(
-            feature_dim,
+            feature_dim,  # ← Changed from embedding_dim * 2
             hidden_dim=hidden_dim,
             lambda_reg=lambda_reg,
             weight_decay=weight_decay,
             learning_rate=0.01,
             algorithm='ucb',
             ucb_alpha=1.0,
-            use_cuda=True,
-            use_diagonal_approximation=use_diagonal,
+            use_cuda=False,
+            use_diagonal_approximation=use_diagonal
         )
     else:
         raise ValueError(f"Unknown bandit_type: {bandit_type}")
 
     # Tracking
-    true_item_ranks = []
-    selected_ranks = []
+    true_item_ranks = []  # Where did true item rank?
+    selected_ranks = []  # What rank did we select?
 
     test_data = dataset['test_interactions']
     n_rounds = min(n_rounds, len(test_data))
 
     for t in tqdm(range(n_rounds), desc="Ranking Bandit"):
-        user_id, true_item_id, true_reward = test_data[t]  # ← FIXED: renamed to true_item_id
+        user_id, true_item, true_reward = test_data[t]
 
         # Skip if missing
-        if user_id not in user_embs or true_item_id not in asin_to_idx:
+        if user_id not in user_embs or true_item not in asin_to_idx:
             continue
 
         user_emb = user_embs[user_id]
-        true_idx = asin_to_idx[true_item_id]  # ← FIXED: use true_item_id
+        true_idx = asin_to_idx[true_item]
 
         # Sample candidates (always include true item)
         other_indices = np.random.choice(
             [i for i in range(len(item_asins)) if i != true_idx],
-            min(n_candidates - 1, len(item_asins) - 1),
+            min(n_candidates - 1,
+                len(item_asins) - 1),
             replace=False)
         candidate_indices = [true_idx] + other_indices.tolist()
         np.random.shuffle(candidate_indices)
 
         # Find position of true item in candidate list
         true_position_in_candidates = candidate_indices.index(true_idx)
-
-        # Get actual item IDs for candidates
-        candidate_item_ids = [item_asins[idx] for idx in candidate_indices]  # ← ADDED
 
         # Compute features: [item; user] concatenation
         candidate_embs = item_array[candidate_indices]
@@ -184,10 +180,12 @@ def run_ranking_bandit(
         scores = bandit.predict_scores(features)
 
         # Rank candidates by scores (descending)
-        ranking = np.argsort(-scores)  # Indices sorted by score (highest first)
+        ranking = np.argsort(
+            -scores)  # Indices sorted by score (highest first)
 
         # Find where true item ranked
-        true_item_rank = np.where(ranking == true_position_in_candidates)[0][0] + 1  # 1-indexed
+        true_item_rank = np.where(
+            ranking == true_position_in_candidates)[0][0] + 1  # 1-indexed
         true_item_ranks.append(true_item_rank)
 
         # Bandit selects top-ranked item
@@ -198,43 +196,32 @@ def run_ranking_bandit(
 
         # ===== UPDATE =====
         if update_mode == 'full':
-            # Update on ALL candidates with their true rewards
-            for i, cand_item_id in enumerate(candidate_item_ids):  # ← FIXED: use IDs
-                if cand_item_id == true_item_id:
-                    reward = true_reward  # Actual rating (0-1)
-                else:
-                    reward = 0.0  # Not the target item
-                
-                bandit.update(features[i], reward)  # ← FIXED: use features (embeddings)
+            # Update on ALL candidates (full information)
+            for idx in range(len(candidate_indices)):
+                # Label: 1 if this is the true item, 0 otherwise
+                label = 1.0 if candidate_indices[idx] == true_idx else 0.0
+                bandit.update(features[idx], label)
 
         else:  # 'selected_only'
-            # Only update on selected item with continuous reward
-            selected_item_id = candidate_item_ids[ranking[0]]  # ← FIXED: use ranking position
-            
-            if selected_item_id == true_item_id:
-                observed_reward = true_reward  # ← FIXED: use continuous reward
-            else:
-                observed_reward = 0.0
-            
-            bandit.update(features[selected_position], observed_reward)  # ← FIXED
+            # Only update on selected item
+            label = 1.0 if selected_idx == true_idx else 0.0
+            bandit.update(features[selected_position], label)
 
     # Compute metrics
     true_item_ranks = np.array(true_item_ranks)
 
-    results = {
+    return {
         'true_item_ranks': true_item_ranks,
         'mean_rank': np.mean(true_item_ranks),
         'median_rank': np.median(true_item_ranks),
-        'mrr': np.mean(1.0 / true_item_ranks),
+        'mrr': np.mean(1.0 / true_item_ranks),  # Mean Reciprocal Rank
         'hit@1': np.mean(true_item_ranks == 1),
+        'hit@3': np.mean(true_item_ranks <= 3),
         'hit@5': np.mean(true_item_ranks <= 5),
         'hit@10': np.mean(true_item_ranks <= 10),
-        'cumulative_reward': bandit.cumulative_reward,
-        'avg_reward': bandit.cumulative_reward / len(true_item_ranks),
-        'n_rounds': len(true_item_ranks)
+        'n_rounds': len(true_item_ranks),
+        'n_candidates': n_candidates
     }
-    
-    return results
 
 
 def plot_results(bert_results,
@@ -333,25 +320,35 @@ def main():
     print(
         f"Original embedding dim: {len(next(iter(bert_item_embs.values())))}")
 
-    n_rounds = 8000
-    
     # Test configurations
     configs = [
         {
-            'name': 'Neural - UMAP (10) - λ=0.1',
-            'reduce': 'umap',
-            'dims': 10,
+            'name': 'Neural - No Reduction - λ=1.0',
+            'reduce': None,
             'bandit_type': 'neural',
-            'lambda_reg': 0.1,
-            'n_rounds': n_rounds
+            'lambda_reg': 1.0,
+            'n_rounds': 1000
         },
         {
-            'name': 'Neural - UMAP (10) - λ=0.01',
-            'reduce': 'umap',
-            'dims': 10,
+            'name': 'Neural - No Reduction - λ=10.0',
+            'reduce': None,
             'bandit_type': 'neural',
-            'lambda_reg': 0.01,
-            'n_rounds': n_rounds
+            'lambda_reg': 10.0,
+            'n_rounds': 1000
+        },
+        {
+            'name': 'Neural - PCA (50) - λ=10.0',
+            'reduce': 'pca',
+            'bandit_type': 'neural',
+            'lambda_reg': 10.0,
+            'n_rounds': 1000
+        },
+        {
+            'name': 'Neural - UMAP (10) - λ=10.0',
+            'reduce': 'umap',
+            'bandit_type': 'neural',
+            'lambda_reg': 10.0,
+            'n_rounds': 1000
         },
     ]
 
@@ -364,22 +361,22 @@ def main():
 
         # Apply dimensionality reduction if specified
         if config['reduce'] == 'pca':
-            print("\nApplying PCA...")
+            print("\nApplying PCA to 50 dimensions...")
             bert_reduced, _ = reduce_embeddings(bert_item_embs,
                                                 method='pca',
-                                                n_components=config['dims'])
+                                                n_components=50)
             simcse_reduced, _ = reduce_embeddings(simcse_item_embs,
                                                   method='pca',
-                                                  n_components=config['dims'])
+                                                  n_components=50)
         elif config['reduce'] == 'umap':
-            print("\nApplying UMAP...")
+            print("\nApplying UMAP to 10 dimensions...")
             try:
                 bert_reduced, _ = reduce_embeddings(bert_item_embs,
                                                     method='umap',
-                                                    n_components=config['dims'])
+                                                    n_components=10)
                 simcse_reduced, _ = reduce_embeddings(simcse_item_embs,
                                                       method='umap',
-                                                      n_components=config['dims'])
+                                                      n_components=10)
             except ImportError:
                 print("⚠️  UMAP not installed, skipping this config")
                 print("   Install with: pip install umap-learn")
