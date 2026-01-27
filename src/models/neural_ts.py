@@ -23,7 +23,7 @@ class NeuralContextualBandit:
             algorithm: Literal['ts', 'ucb'] = 'ts',
             ucb_alpha: float = 1.0,
             use_cuda: bool = True,
-            use_diagonal_approximation: bool = True):  # ← ADD THIS
+            use_diagonal_approx: bool = True):  # ← ADD THIS
 
         self.d = embedding_dim
         self.m = hidden_dim
@@ -33,7 +33,7 @@ class NeuralContextualBandit:
         self.lr = learning_rate
         self.algorithm = algorithm
         self.ucb_alpha = ucb_alpha
-        self.use_diagonal = use_diagonal_approximation  # ← ADD THIS
+        self.use_diagonal = use_diagonal_approx  # ← ADD THIS
 
         if use_cuda and torch.cuda.is_available():
             print("Bandit employing CUDA")
